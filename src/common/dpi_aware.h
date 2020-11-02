@@ -1,6 +1,8 @@
 #pragma once
 #include "windef.h"
 
+#pragma comment(lib, "shcore.lib")
+
 namespace DPIAware
 {
     constexpr inline int DEFAULT_DPI = 96;
@@ -8,9 +10,10 @@ namespace DPIAware
     HRESULT GetScreenDPIForWindow(HWND hwnd, UINT& dpi_x, UINT& dpi_y);
     HRESULT GetScreenDPIForPoint(POINT p, UINT& dpi_x, UINT& dpi_y);
     void Convert(HMONITOR monitor_handle, int& width, int& height);
+    void InverseConvert(HMONITOR monitor_handle, int& width, int& height);
     void EnableDPIAwarenessForThisProcess();
 
-    enum AwarnessLevel
+    enum AwarenessLevel
     {
         UNAWARE,
         SYSTEM_AWARE,
@@ -18,5 +21,5 @@ namespace DPIAware
         PER_MONITOR_AWARE_V2,
         UNAWARE_GDISCALED
     };
-    AwarnessLevel GetAwarenessLevel(DPI_AWARENESS_CONTEXT system_returned_value);
+    AwarenessLevel GetAwarenessLevel(DPI_AWARENESS_CONTEXT system_returned_value);
 };

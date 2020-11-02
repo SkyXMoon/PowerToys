@@ -12,12 +12,17 @@ using System.Windows.Shapes;
 namespace FancyZonesEditor
 {
     /// <summary>
-    /// Once you've "Committ"ed the starter grid, then the Zones within the grid come to life for you to be able to further subdivide them
+    /// Once you've "Commit"ted the starter grid, then the Zones within the grid come to life for you to be able to further subdivide them
     /// using splitters
     /// </summary>
     public partial class GridZone : UserControl
     {
-        public static readonly DependencyProperty IsSelectedProperty = DependencyProperty.Register("IsSelected", typeof(bool), typeof(GridZone), new PropertyMetadata(false, OnSelectionChanged));
+        // Non-localizable strings
+        private const string ObjectDependencyID = "IsSelected";
+        private const string GridZoneBackgroundBrushID = "GridZoneBackgroundBrush";
+        private const string PropertyIsShiftKeyPressedID = "IsShiftKeyPressed";
+
+        public static readonly DependencyProperty IsSelectedProperty = DependencyProperty.Register(ObjectDependencyID, typeof(bool), typeof(GridZone), new PropertyMetadata(false, OnSelectionChanged));
 
         public event SplitEventHandler Split;
 
@@ -45,7 +50,7 @@ namespace FancyZonesEditor
 
         private void OnSelectionChanged()
         {
-            Background = IsSelected ? SystemParameters.WindowGlassBrush : App.Current.Resources["GridZoneBackgroundBrush"] as SolidColorBrush;
+            Background = IsSelected ? SystemParameters.WindowGlassBrush : App.Current.Resources[GridZoneBackgroundBrushID] as SolidColorBrush;
         }
 
         public bool IsSelected
@@ -69,7 +74,7 @@ namespace FancyZonesEditor
 
         private void ZoneSettings_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
         {
-            if (e.PropertyName == "IsShiftKeyPressed")
+            if (e.PropertyName == PropertyIsShiftKeyPressedID)
             {
                 _switchOrientation = ((App)Application.Current).ZoneSettings.IsShiftKeyPressed;
                 if (_lastPos.X != -1)

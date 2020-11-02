@@ -2,12 +2,10 @@
 // The Microsoft Corporation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
-using Microsoft.PowerToys.Settings.UI.Lib;
-using Microsoft.PowerToys.Settings.UI.ViewModels;
-using Windows.UI.Xaml;
+using Microsoft.PowerToys.Settings.UI.Library;
+using Microsoft.PowerToys.Settings.UI.Library.Utilities;
+using Microsoft.PowerToys.Settings.UI.Library.ViewModels;
 using Windows.UI.Xaml.Controls;
-using Windows.UI.Xaml.Navigation;
 
 namespace Microsoft.PowerToys.Settings.UI.Views
 {
@@ -16,13 +14,14 @@ namespace Microsoft.PowerToys.Settings.UI.Views
     /// </summary>
     public sealed partial class PowerPreviewPage : Page
     {
-        public PowerPreviewViewModel viewModel { get; set; }
+        public PowerPreviewViewModel ViewModel { get; set; }
 
         public PowerPreviewPage()
         {
-            this.InitializeComponent();
-            viewModel = new PowerPreviewViewModel();
-            this.PowerPreviewSettingsView.DataContext = viewModel;
+            InitializeComponent();
+            var settingsUtils = new SettingsUtils(new SystemIOProvider());
+            ViewModel = new PowerPreviewViewModel(SettingsRepository<PowerPreviewSettings>.GetInstance(settingsUtils), SettingsRepository<GeneralSettings>.GetInstance(settingsUtils), ShellPage.SendDefaultIPCMessage);
+            DataContext = ViewModel;
         }
     }
 }

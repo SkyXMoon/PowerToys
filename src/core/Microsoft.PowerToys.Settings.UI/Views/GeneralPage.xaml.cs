@@ -3,14 +3,15 @@
 // See the LICENSE file in the project root for more information.
 
 using System;
-using System.IO;
-using Microsoft.PowerToys.Settings.UI.Lib;
-using Microsoft.PowerToys.Settings.UI.ViewModels;
-using Windows.System;
-using Windows.UI.Popups;
+using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
+using Microsoft.PowerToys.Settings.UI.Library;
+using Microsoft.PowerToys.Settings.UI.Library.Utilities;
+using Microsoft.PowerToys.Settings.UI.Library.ViewModels;
+using Windows.ApplicationModel.Resources;
+using Windows.Data.Json;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
-using Windows.UI.Xaml.Navigation;
 
 namespace Microsoft.PowerToys.Settings.UI.Views
 {
@@ -28,12 +29,78 @@ namespace Microsoft.PowerToys.Settings.UI.Views
         /// Initializes a new instance of the <see cref="GeneralPage"/> class.
         /// General Settings page constructor.
         /// </summary>
+        [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Exceptions from the IPC response handler should be caught and logged.")]
         public GeneralPage()
         {
-            this.InitializeComponent();
+            InitializeComponent();
 
-            this.ViewModel = new GeneralViewModel();
-            this.GeneralSettingsView.DataContext = this.ViewModel;
+            // Load string resources
+            ResourceLoader loader = ResourceLoader.GetForViewIndependentUse();
+            var settingsUtils = new SettingsUtils(new SystemIOProvider());
+
+            ViewModel = new GeneralViewModel(
+                SettingsRepository<GeneralSettings>.GetInstance(settingsUtils),
+                loader.GetString("GeneralSettings_RunningAsAdminText"),
+                loader.GetString("GeneralSettings_RunningAsUserText"),
+                ShellPage.IsElevated,
+                ShellPage.IsUserAnAdmin,
+                UpdateUIThemeMethod,
+                ShellPage.SendDefaultIPCMessage,
+                ShellPage.SendRestartAdminIPCMessage,
+                ShellPage.SendCheckForUpdatesIPCMessage);
+
+            ShellPage.ShellHandler.IPCResponseHandleList.Add((JsonObject json) =>
+            {
+                try
+                {
+                    string version = json.GetNamedString("version");
+                    bool isLatest = json.GetNamedBoolean("isVersionLatest");
+
+                    var str = string.Empty;
+                    if (isLatest)
+                    {
+                        str = ResourceLoader.GetForCurrentView().GetString("GeneralSettings_VersionIsLatest");
+                    }
+                    else if (!string.IsNullOrEmpty(version))
+                    {
+                        str = ResourceLoader.GetForCurrentView().GetString("GeneralSettings_NewVersionIsAvailable");
+                        if (!string.IsNullOrEmpty(str))
+                        {
+                            str += ": " + version;
+                        }
+                    }
+
+                    // Using CurrentCulture since this is user-facing
+                    ViewModel.LatestAvailableVersion = string.Format(CultureInfo.CurrentCulture, str);
+                }
+                catch (Exception e)
+                {
+                    Logger.LogError("Exception encountered when reading the version.", e);
+                }
+            });
+
+            DataContext = ViewModel;
+        }
+
+        public static int UpdateUIThemeMethod(string themeName)
+        {
+            switch (themeName?.ToUpperInvariant())
+            {
+                case "LIGHT":
+                    ShellPage.ShellHandler.RequestedTheme = ElementTheme.Light;
+                    break;
+                case "DARK":
+                    ShellPage.ShellHandler.RequestedTheme = ElementTheme.Dark;
+                    break;
+                case "SYSTEM":
+                    ShellPage.ShellHandler.RequestedTheme = ElementTheme.Default;
+                    break;
+                default:
+                    Logger.LogError($"Unexpected theme name: {themeName}");
+                    break;
+            }
+
+            return 0;
         }
     }
 }

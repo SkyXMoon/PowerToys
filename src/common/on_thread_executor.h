@@ -18,14 +18,14 @@ public:
     OnThreadExecutor();
     ~OnThreadExecutor();
     std::future<void> submit(task_t task);
+    void cancel();
 
 private:
     void worker_thread();
-
-    std::thread _worker_thread;
 
     std::mutex _task_mutex;
     std::condition_variable _task_cv;
     std::atomic_bool _shutdown_request;
     std::queue<std::packaged_task<void()>> _task_queue;
+    std::thread _worker_thread;
 };

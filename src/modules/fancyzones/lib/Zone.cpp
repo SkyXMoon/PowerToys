@@ -9,108 +9,80 @@
 #include "Settings.h"
 #include "util.h"
 
-#include "common/monitors.h"
+namespace
+{
+    bool ValidateZoneRect(const RECT& rect)
+    {
+        int width  = rect.right - rect.left;
+        int height = rect.bottom - rect.top;
+        return rect.left   >= ZoneConstants::MAX_NEGATIVE_SPACING &&
+               rect.right  >= ZoneConstants::MAX_NEGATIVE_SPACING &&
+               rect.top    >= ZoneConstants::MAX_NEGATIVE_SPACING &&
+               rect.bottom >= ZoneConstants::MAX_NEGATIVE_SPACING &&
+               width >= 0 && height >= 0;
+    }
+
+    BOOL CALLBACK saveDisplayToVector(HMONITOR monitor, HDC hdc, LPRECT rect, LPARAM data)
+    {
+        reinterpret_cast<std::vector<HMONITOR>*>(data)->emplace_back(monitor);
+        return true;
+    }
+
+    bool allMonitorsHaveSameDpiScaling()
+    {
+        std::vector<HMONITOR> monitors;
+        EnumDisplayMonitors(NULL, NULL, saveDisplayToVector, reinterpret_cast<LPARAM>(&monitors));
+
+        if (monitors.size() < 2)
+        {
+            return true;
+        }
+
+        UINT firstMonitorDpiX;
+        UINT firstMonitorDpiY;
+
+        if (S_OK != GetDpiForMonitor(monitors[0], MDT_EFFECTIVE_DPI, &firstMonitorDpiX, &firstMonitorDpiY))
+        {
+            return false;
+        }
+
+        for (int i = 1; i < monitors.size(); i++)
+        {
+            UINT iteratedMonitorDpiX;
+            UINT iteratedMonitorDpiY;
+
+            if (S_OK != GetDpiForMonitor(monitors[i], MDT_EFFECTIVE_DPI, &iteratedMonitorDpiX, &iteratedMonitorDpiY) ||
+                iteratedMonitorDpiX != firstMonitorDpiX)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+}
 
 struct Zone : winrt::implements<Zone, IZone>
 {
 public:
-    Zone(RECT zoneRect) :
-        m_zoneRect(zoneRect)
+    Zone(RECT zoneRect, const size_t zoneId) :
+        m_zoneRect(zoneRect),
+        m_id(zoneId)
     {
     }
 
-    IFACEMETHODIMP_(RECT) GetZoneRect() noexcept { return m_zoneRect; }
-    IFACEMETHODIMP_(bool) IsEmpty() noexcept { return m_windows.empty(); };
-    IFACEMETHODIMP_(bool) ContainsWindow(HWND window) noexcept;
-    IFACEMETHODIMP_(void) AddWindowToZone(HWND window, HWND zoneWindow, bool stampZone) noexcept;
-    IFACEMETHODIMP_(void) RemoveWindowFromZone(HWND window, bool restoreSize) noexcept;
-    IFACEMETHODIMP_(void) SetId(size_t id) noexcept { m_id = id; }
-    IFACEMETHODIMP_(size_t) Id() noexcept { return m_id; }
-    IFACEMETHODIMP_(RECT) ComputeActualZoneRect(HWND window, HWND zoneWindow) noexcept;
+    IFACEMETHODIMP_(RECT) GetZoneRect() const noexcept { return m_zoneRect; }
+    IFACEMETHODIMP_(size_t) Id() const noexcept { return m_id; }
+    IFACEMETHODIMP_(RECT) ComputeActualZoneRect(HWND window, HWND zoneWindow) const noexcept;
 
 private:
-    void SizeWindowToZone(HWND window, HWND zoneWindow) noexcept;
-    void StampZone(HWND window, bool stamp) noexcept;
-
     RECT m_zoneRect{};
-    size_t m_id{};
+    const size_t m_id{};
     std::map<HWND, RECT> m_windows{};
 };
 
-IFACEMETHODIMP_(bool) Zone::ContainsWindow(HWND window) noexcept
-{
-    return (m_windows.find(window) != m_windows.end());
-}
-
-IFACEMETHODIMP_(void) Zone::AddWindowToZone(HWND window, HWND zoneWindow, bool stampZone) noexcept
-{
-    WINDOWPLACEMENT placement;
-    ::GetWindowPlacement(window, &placement);
-    ::GetWindowRect(window, &placement.rcNormalPosition);
-    m_windows.emplace(std::pair<HWND, RECT>(window, placement.rcNormalPosition));
-
-    SizeWindowToZone(window, zoneWindow);
-    if (stampZone)
-    {
-        StampZone(window, true);
-    }
-}
-
-IFACEMETHODIMP_(void) Zone::RemoveWindowFromZone(HWND window, bool restoreSize) noexcept
-{
-    auto iter = m_windows.find(window);
-    if (iter != m_windows.end())
-    {
-        m_windows.erase(iter);
-        StampZone(window, false);
-    }
-}
-
-void Zone::SizeWindowToZone(HWND window, HWND zoneWindow) noexcept
-{
-    SizeWindowToRect(window, ComputeActualZoneRect(window, zoneWindow));
-}
-
-static BOOL CALLBACK saveDisplayToVector(HMONITOR monitor, HDC hdc, LPRECT rect, LPARAM data)
-{
-    reinterpret_cast<std::vector<HMONITOR>*>(data)->emplace_back(monitor);
-    return true;
-}
-
-bool allMonitorsHaveSameDpiScaling()
-{
-    std::vector<HMONITOR> monitors;
-    EnumDisplayMonitors(NULL, NULL, saveDisplayToVector, reinterpret_cast<LPARAM>(&monitors));
-
-    if (monitors.size() < 2)
-    {
-        return true;
-    }
-
-    UINT firstMonitorDpiX;
-    UINT firstMonitorDpiY;
-
-    if (S_OK != GetDpiForMonitor(monitors[0], MDT_EFFECTIVE_DPI, &firstMonitorDpiX, &firstMonitorDpiY))
-    {
-        return false;
-    }
-
-    for (int i = 1; i < monitors.size(); i++)
-    {
-        UINT iteratedMonitorDpiX;
-        UINT iteratedMonitorDpiY;
-
-        if (S_OK != GetDpiForMonitor(monitors[i], MDT_EFFECTIVE_DPI, &iteratedMonitorDpiX, &iteratedMonitorDpiY) ||
-            iteratedMonitorDpiX != firstMonitorDpiX)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-RECT Zone::ComputeActualZoneRect(HWND window, HWND zoneWindow) noexcept
+RECT Zone::ComputeActualZoneRect(HWND window, HWND zoneWindow) const noexcept
 {
     // Take care of 1px border
     RECT newWindowRect = m_zoneRect;
@@ -161,19 +133,14 @@ RECT Zone::ComputeActualZoneRect(HWND window, HWND zoneWindow) noexcept
     return newWindowRect;
 }
 
-void Zone::StampZone(HWND window, bool stamp) noexcept
+winrt::com_ptr<IZone> MakeZone(const RECT& zoneRect, const size_t zoneId) noexcept
 {
-    if (stamp)
+    if (ValidateZoneRect(zoneRect) && zoneId >= 0)
     {
-        SetProp(window, ZONE_STAMP, reinterpret_cast<HANDLE>(m_id));
+        return winrt::make_self<Zone>(zoneRect, zoneId);
     }
     else
     {
-        RemoveProp(window, ZONE_STAMP);
+        return nullptr;
     }
-}
-
-winrt::com_ptr<IZone> MakeZone(const RECT& zoneRect) noexcept
-{
-    return winrt::make_self<Zone>(zoneRect);
 }

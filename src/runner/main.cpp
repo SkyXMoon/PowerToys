@@ -7,15 +7,18 @@
 #include "trace.h"
 #include "general_settings.h"
 #include "restart_elevated.h"
-#include "resource.h"
+#include "Generated files/resource.h"
 
+#include <common/appMutex.h>
 #include <common/common.h>
+#include <common/comUtils.h>
 #include <common/dpi_aware.h>
-
-#include <common/winstore.h>
 #include <common/notifications.h>
-
+#include <common/processApi.h>
+#include <common/RestartManagement.h>
+#include <common/toast_dont_show_again.h>
 #include <common/updating/updating.h>
+#include <common/winstore.h>
 
 #include "update_state.h"
 #include "update_utils.h"
@@ -23,25 +26,21 @@
 
 #include <winrt/Windows.System.h>
 
+#include <Psapi.h>
+#include <RestartManager.h>
+#include "centralized_kb_hook.h"
+
 #if _DEBUG && _WIN64
 #include "unhandled_exception_handler.h"
 #endif
-#include <common/notifications/fancyzones_notifications.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
-
-namespace localized_strings
-{
-    const wchar_t MSI_VERSION_IS_ALREADY_RUNNING[] = L"An older version of PowerToys is already running.";
-    const wchar_t OLDER_MSIX_UNINSTALLED[] = L"An older MSIX version of PowerToys was uninstalled.";
-}
+extern updating::notifications::strings Strings;
 
 namespace
 {
-    const wchar_t MSI_VERSION_MUTEX_NAME[] = L"Local\\PowerToyRunMutex";
-    const wchar_t MSIX_VERSION_MUTEX_NAME[] = L"Local\\PowerToyMSIXRunMutex";
-
     const wchar_t PT_URI_PROTOCOL_SCHEME[] = L"powertoys://";
+    const wchar_t POWER_TOYS_MODULE_LOAD_FAIL[] = L"Failed to load "; // Module name will be appended on this message and it is not localized.
 }
 
 void chdir_current_executable()
@@ -52,34 +51,24 @@ void chdir_current_executable()
     PathRemoveFileSpec(executable_path);
     if (!SetCurrentDirectory(executable_path))
     {
-        show_last_error_message(L"Change Directory to Executable Path", GetLastError());
+        show_last_error_message(L"Change Directory to Executable Path", GetLastError(), L"PowerToys - runner");
     }
 }
 
-wil::unique_mutex_nothrow create_runner_mutex(const bool msix_version)
+inline wil::unique_mutex_nothrow create_msi_mutex()
 {
-    wchar_t username[UNLEN + 1];
-    DWORD username_length = UNLEN + 1;
-    GetUserNameW(username, &username_length);
-    wil::unique_mutex_nothrow result{ CreateMutexW(nullptr, TRUE, (std::wstring(msix_version ? MSIX_VERSION_MUTEX_NAME : MSI_VERSION_MUTEX_NAME) + username).c_str()) };
-
-    return GetLastError() == ERROR_ALREADY_EXISTS ? wil::unique_mutex_nothrow{} : std::move(result);
+    return createAppMutex(POWERTOYS_MSI_MUTEX_NAME);
 }
 
-wil::unique_mutex_nothrow create_msi_mutex()
+inline wil::unique_mutex_nothrow create_msix_mutex()
 {
-    return create_runner_mutex(false);
-}
-
-wil::unique_mutex_nothrow create_msix_mutex()
-{
-    return create_runner_mutex(true);
+    return createAppMutex(POWERTOYS_MSIX_MUTEX_NAME);
 }
 
 void open_menu_from_another_instance()
 {
-    HWND hwnd_main = FindWindow(L"PToyTrayIconWindow", NULL);
-    PostMessage(hwnd_main, WM_COMMAND, ID_SETTINGS_MENU_COMMAND, NULL);
+    const HWND hwnd_main = FindWindowW(L"PToyTrayIconWindow", nullptr);
+    PostMessageW(hwnd_main, WM_COMMAND, ID_SETTINGS_MENU_COMMAND, 0);
 }
 
 int runner(bool isProcessElevated)
@@ -93,6 +82,7 @@ int runner(bool isProcessElevated)
 #endif
     Trace::RegisterProvider();
     start_tray_icon();
+    CentralizedKeyboardHook::Start();
 
     int result = -1;
     try
@@ -112,7 +102,7 @@ int runner(bool isProcessElevated)
             std::thread{ [] {
                 if (updating::uninstall_previous_msix_version_async().get())
                 {
-                    notifications::show_toast(localized_strings::OLDER_MSIX_UNINSTALLED);
+                    notifications::show_toast(GET_RESOURCE_STRING(IDS_OLDER_MSIX_UNINSTALLED).c_str(), L"PowerToys");
                 }
             } }.detach();
         }
@@ -120,42 +110,34 @@ int runner(bool isProcessElevated)
         notifications::register_background_toast_handler();
 
         chdir_current_executable();
-        // Load Powertyos DLLS
-        // For now only load known DLLs
-        
-        std::wstring baseModuleFolder = L"modules/";
+        // Load Powertoys DLLs
 
-        std::unordered_set<std::wstring> known_dlls = {
-            L"shortcut_guide.dll",
-            L"fancyzones.dll",
-            L"PowerRenameExt.dll",
-            L"Microsoft.Launcher.dll",
-            L"ImageResizerExt.dll",
-            L"powerpreview.dll",
-            L"KeyboardManager.dll"
+        const std::array<std::wstring_view, 8> knownModules = {
+            L"modules/FancyZones/fancyzones.dll",
+            L"modules/FileExplorerPreview/powerpreview.dll",
+            L"modules/ImageResizer/ImageResizerExt.dll",
+            L"modules/KeyboardManager/KeyboardManager.dll",
+            L"modules/Launcher/Microsoft.Launcher.dll",
+            L"modules/PowerRename/PowerRenameExt.dll",
+            L"modules/ShortcutGuide/ShortcutGuide.dll",
+            L"modules/ColorPicker/ColorPicker.dll",
         };
 
-        std::unordered_set<std::wstring> module_folders = {
-            L"",
-            L"FileExplorerPreview/",
-        };
-
-        for (std::wstring subfolderName : module_folders)
+        for (const auto& moduleSubdir : knownModules)
         {
-            for (auto& file : std::filesystem::directory_iterator(baseModuleFolder + subfolderName))
+            try
             {
-                if (file.path().extension() != L".dll")
-                    continue;
-                if (known_dlls.find(file.path().filename()) == known_dlls.end())
-                    continue;
-                try
-                {
-                    auto module = load_powertoy(file.path().wstring());
-                    modules().emplace(module->get_name(), std::move(module));
-                }
-                catch (...)
-                {
-                }
+                auto module = load_powertoy(moduleSubdir);
+                modules().emplace(module->get_key(), std::move(module));
+            }
+            catch (...)
+            {
+                std::wstring errorMessage = POWER_TOYS_MODULE_LOAD_FAIL;
+                errorMessage += moduleSubdir;
+                MessageBoxW(NULL,
+                            errorMessage.c_str(),
+                            L"PowerToys",
+                            MB_OK | MB_ICONERROR);
             }
         }
         // Start initial powertoys
@@ -220,21 +202,66 @@ enum class toast_notification_handler_result
 
 toast_notification_handler_result toast_notification_handler(const std::wstring_view param)
 {
-    if (param == L"cant_drag_elevated_disable/")
+    const std::wstring_view cant_drag_elevated_disable = L"cant_drag_elevated_disable/";
+    const std::wstring_view couldnt_toggle_powerpreview_modules_disable = L"couldnt_toggle_powerpreview_modules_disable/";
+    const std::wstring_view download_and_install_update = L"download_and_install_update/";
+    const std::wstring_view open_settings = L"open_settings/";
+    const std::wstring_view schedule_update = L"schedule_update/";
+    const std::wstring_view update_now = L"update_now/";
+
+    if (param == cant_drag_elevated_disable)
     {
-        return disable_cant_drag_elevated_warning() ? toast_notification_handler_result::exit_success : toast_notification_handler_result::exit_error;
+        return notifications::disable_toast(notifications::CantDragElevatedDontShowAgainRegistryPath) ? toast_notification_handler_result::exit_success : toast_notification_handler_result::exit_error;
     }
-    else if (param == L"update_now/")
+    else if (param.starts_with(update_now))
     {
-        launch_action_runner(UPDATE_NOW_LAUNCH_STAGE1_CMDARG);
+        std::wstring args{ UPDATE_NOW_LAUNCH_STAGE1_CMDARG };
+        const auto installerFilename = param.data() + size(update_now);
+        args += L' ';
+        args += installerFilename;
+        launch_action_runner(args.c_str());
         return toast_notification_handler_result::exit_success;
     }
-    else if (param == L"schedule_update/")
+    else if (param.starts_with(schedule_update))
     {
-        UpdateState::store([](UpdateState& state) {
+        const auto installerFilename = param.data() + size(schedule_update);
+        UpdateState::store([=](UpdateState& state) {
             state.pending_update = true;
+            state.pending_installer_filename = installerFilename;
         });
 
+        return toast_notification_handler_result::exit_success;
+    }
+    else if (param.starts_with(download_and_install_update))
+    {
+        try
+        {
+            std::wstring installer_filename = updating::download_update(Strings).get();
+
+            std::wstring args{ UPDATE_NOW_LAUNCH_STAGE1_CMDARG };
+            args += L' ';
+            args += installer_filename;
+            launch_action_runner(args.c_str());
+
+            return toast_notification_handler_result::exit_success;
+        }
+        catch (...)
+        {
+            MessageBoxW(nullptr,
+                        GET_RESOURCE_STRING(IDS_DOWNLOAD_UPDATE_ERROR).c_str(),
+                        L"PowerToys",
+                        MB_ICONWARNING | MB_OK);
+
+            return toast_notification_handler_result::exit_error;
+        }
+    }
+    else if (param == couldnt_toggle_powerpreview_modules_disable)
+    {
+        return notifications::disable_toast(notifications::PreviewModulesDontShowAgainRegistryPath) ? toast_notification_handler_result::exit_success : toast_notification_handler_result::exit_error;
+    }
+    else if (param == open_settings)
+    {
+        open_menu_from_another_instance();
         return toast_notification_handler_result::exit_success;
     }
     else
@@ -246,12 +273,23 @@ toast_notification_handler_result toast_notification_handler(const std::wstring_
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
     winrt::init_apartment();
+    const wchar_t* securityDescriptor =
+        L"O:BA" // Owner: Builtin (local) administrator
+        L"G:BA" // Group: Builtin (local) administrator
+        L"D:"
+        L"(A;;0x7;;;PS)" // Access allowed on COM_RIGHTS_EXECUTE, _LOCAL, & _REMOTE for Personal self
+        L"(A;;0x7;;;IU)" // Access allowed on COM_RIGHTS_EXECUTE for Interactive Users
+        L"(A;;0x3;;;SY)" // Access allowed on COM_RIGHTS_EXECUTE, & _LOCAL for Local system
+        L"(A;;0x7;;;BA)" // Access allowed on COM_RIGHTS_EXECUTE, _LOCAL, & _REMOTE for Builtin (local) administrator
+        L"(A;;0x3;;;S-1-15-3-1310292540-1029022339-4008023048-2190398717-53961996-4257829345-603366646)" // Access allowed on COM_RIGHTS_EXECUTE, & _LOCAL for Win32WebViewHost package capability
+        L"S:"
+        L"(ML;;NX;;;LW)"; // Integrity label on No execute up for Low mandatory level
+    initializeCOMSecurity(securityDescriptor);
 
     if (launch_pending_update())
     {
         return 0;
     }
-
     int n_cmd_args = 0;
     LPWSTR* cmd_arg_list = CommandLineToArgvW(GetCommandLineW(), &n_cmd_args);
     switch (should_run_in_special_mode(n_cmd_args, cmd_arg_list))
@@ -267,8 +305,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             return 0;
         }
     case SpecialMode::ReportSuccessfulUpdate:
-        notifications::show_toast(GET_RESOURCE_STRING(IDS_AUTOUPDATE_SUCCESS));
+    {
+        notifications::remove_toasts(notifications::UPDATING_PROCESS_TOAST_TAG);
+        notifications::show_toast(GET_RESOURCE_STRING(IDS_PT_UPDATE_MESSAGE_BOX_TEXT),
+                                  L"PowerToys",
+                                  notifications::toast_params{ notifications::UPDATING_PROCESS_TOAST_TAG });
         break;
+    }
 
     case SpecialMode::None:
         // continue as usual
@@ -345,11 +388,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     {
         // Singletons initialization order needs to be preserved, first events and
         // then modules to guarantee the reverse destruction order.
-        SystemMenuHelperInstace();
-        powertoys_events();
         modules();
 
         auto general_settings = load_general_settings();
+
+        // Apply the general settings but don't save it as the modules() variable has not been loaded yet
+        apply_general_settings(general_settings, false);
         int rvalue = 0;
         const bool elevated = is_process_elevated();
         if ((elevated ||

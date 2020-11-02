@@ -1,9 +1,15 @@
-﻿using System;
+﻿// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
+using System;
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using ICSharpCode.SharpZipLib.Zip;
 using Newtonsoft.Json;
 using Wox.Plugin;
+using Wox.Plugin.Logger;
 
 namespace Wox.Core.Plugin
 {
@@ -13,40 +19,42 @@ namespace Wox.Core.Plugin
         {
             if (File.Exists(path))
             {
-                string tempFoler = Path.Combine(Path.GetTempPath(), "wox\\plugins");
-                if (Directory.Exists(tempFoler))
+                string tempFolder = Path.Combine(Path.GetTempPath(), "wox\\plugins");
+                if (Directory.Exists(tempFolder))
                 {
-                    Directory.Delete(tempFoler, true);
+                    Directory.Delete(tempFolder, true);
                 }
-                UnZip(path, tempFoler, true);
 
-                string iniPath = Path.Combine(tempFoler, "plugin.json");
+                UnZip(path, tempFolder, true);
+
+                string iniPath = Path.Combine(tempFolder, "plugin.json");
                 if (!File.Exists(iniPath))
                 {
                     MessageBox.Show("Install failed: plugin config is missing");
                     return;
                 }
 
-                PluginMetadata plugin = GetMetadataFromJson(tempFoler);
+                PluginMetadata plugin = GetMetadataFromJson(tempFolder);
                 if (plugin == null || plugin.Name == null)
                 {
                     MessageBox.Show("Install failed: plugin config is invalid");
                     return;
                 }
 
-                string pluginFolerPath = Infrastructure.Constant.PluginsDirectory;
+                string pluginFolderPath = Constant.PluginsDirectory;
 
+                // Using Ordinal since this is part of a path
                 string newPluginName = plugin.Name
-                    .Replace("/", "_")
-                    .Replace("\\", "_")
-                    .Replace(":", "_")
-                    .Replace("<", "_")
-                    .Replace(">", "_")
-                    .Replace("?", "_")
-                    .Replace("*", "_")
-                    .Replace("|", "_")
+                    .Replace("/", "_", StringComparison.Ordinal)
+                    .Replace("\\", "_", StringComparison.Ordinal)
+                    .Replace(":", "_", StringComparison.Ordinal)
+                    .Replace("<", "_", StringComparison.Ordinal)
+                    .Replace(">", "_", StringComparison.Ordinal)
+                    .Replace("?", "_", StringComparison.Ordinal)
+                    .Replace("*", "_", StringComparison.Ordinal)
+                    .Replace("|", "_", StringComparison.Ordinal)
                     + "-" + Guid.NewGuid();
-                string newPluginPath = Path.Combine(pluginFolerPath, newPluginName);
+                string newPluginPath = Path.Combine(pluginFolderPath, newPluginName);
                 string content = $"Do you want to install following plugin?{Environment.NewLine}{Environment.NewLine}" +
                                  $"Name: {plugin.Name}{Environment.NewLine}" +
                                  $"Version: {plugin.Version}{Environment.NewLine}" +
@@ -67,31 +75,30 @@ namespace Wox.Core.Plugin
                 {
                     if (existingPlugin != null && Directory.Exists(existingPlugin.Metadata.PluginDirectory))
                     {
-                        //when plugin is in use, we can't delete them. That's why we need to make plugin folder a random name
+                        // when plugin is in use, we can't delete them. That's why we need to make plugin folder a random name
                         File.Create(Path.Combine(existingPlugin.Metadata.PluginDirectory, "NeedDelete.txt")).Close();
                     }
 
                     UnZip(path, newPluginPath, true);
-                    Directory.Delete(tempFoler, true);
+                    Directory.Delete(tempFolder, true);
 
-                    //exsiting plugins may be has loaded by application,
-                    //if we try to delelte those kind of plugins, we will get a  error that indicate the
-                    //file is been used now.
-                    //current solution is to restart wox. Ugly.
-                    //if (MainWindow.Initialized)
-                    //{
+                    // existing plugins could be loaded by the application,
+                    // if we try to delete those kind of plugins, we will get a  error that indicate the
+                    // file is been used now.
+                    // current solution is to restart wox. Ugly.
+                    // if (MainWindow.Initialized)
+                    // {
                     //    Plugins.Initialize();
-                    //}
-                    if (MessageBox.Show($"You have installed plugin {plugin.Name} successfully.{Environment.NewLine}" +
-                                        "Restart Wox to take effect?",
-                                        "Install plugin", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+                    // }
+                    if (MessageBox.Show($"You have installed plugin {plugin.Name} successfully.{Environment.NewLine} Restart Wox to take effect?", "Install plugin", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
                     {
-                        PluginManager.API.RestarApp();
+                        PluginManager.API.RestartApp();
                     }
                 }
             }
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Suppressing this to enable FxCop. We are logging the exception, and going forward general exceptions should not be caught")]
         private static PluginMetadata GetMetadataFromJson(string pluginDirectory)
         {
             string configPath = Path.Combine(pluginDirectory, "plugin.json");
@@ -107,73 +114,85 @@ namespace Wox.Core.Plugin
                 metadata = JsonConvert.DeserializeObject<PluginMetadata>(File.ReadAllText(configPath));
                 metadata.PluginDirectory = pluginDirectory;
             }
-            catch (Exception)
+            catch (Exception e)
             {
                 string error = $"Parse plugin config {configPath} failed: json format is not valid";
-#if (DEBUG)
+                Log.Exception(error, e, MethodBase.GetCurrentMethod().DeclaringType);
+#if DEBUG
                 {
                     throw new Exception(error);
                 }
-#endif
+#else
                 return null;
+#endif
             }
-
 
             if (!AllowedLanguage.IsAllowed(metadata.Language))
             {
                 string error = $"Parse plugin config {configPath} failed: invalid language {metadata.Language}";
-#if (DEBUG)
+#if DEBUG
                 {
                     throw new Exception(error);
                 }
-#endif
+#else
                 return null;
+#endif
             }
+
             if (!File.Exists(metadata.ExecuteFilePath))
             {
                 string error = $"Parse plugin config {configPath} failed: ExecuteFile {metadata.ExecuteFilePath} didn't exist";
-#if (DEBUG)
+#if DEBUG
                 {
                     throw new Exception(error);
                 }
-#endif
+#else
                 return null;
+#endif
             }
 
             return metadata;
         }
 
         /// <summary>
-        /// unzip 
+        /// unzip
         /// </summary>
-        /// <param name="zipedFile">The ziped file.</param>
+        /// <param name="zippedFile">The zipped file.</param>
         /// <param name="strDirectory">The STR directory.</param>
-        /// <param name="overWrite">overwirte</param>
-        private static void UnZip(string zipedFile, string strDirectory, bool overWrite)
+        /// <param name="overWrite">overwrite</param>
+        private static void UnZip(string zippedFile, string strDirectory, bool overWrite)
         {
-            if (strDirectory == "")
+            if (string.IsNullOrEmpty(strDirectory))
+            {
                 strDirectory = Directory.GetCurrentDirectory();
-            if (!strDirectory.EndsWith("\\"))
-                strDirectory = strDirectory + "\\";
+            }
 
-            using (ZipInputStream s = new ZipInputStream(File.OpenRead(zipedFile)))
+            // Using Ordinal since this is a path
+            if (!strDirectory.EndsWith("\\", StringComparison.Ordinal))
+            {
+                strDirectory += "\\";
+            }
+
+            using (ZipInputStream s = new ZipInputStream(File.OpenRead(zippedFile)))
             {
                 ZipEntry theEntry;
 
                 while ((theEntry = s.GetNextEntry()) != null)
                 {
-                    string directoryName = "";
-                    string pathToZip = "";
+                    string directoryName = string.Empty;
+                    string pathToZip = string.Empty;
                     pathToZip = theEntry.Name;
 
-                    if (pathToZip != "")
+                    if (!string.IsNullOrEmpty(pathToZip))
+                    {
                         directoryName = Path.GetDirectoryName(pathToZip) + "\\";
+                    }
 
                     string fileName = Path.GetFileName(pathToZip);
 
                     Directory.CreateDirectory(strDirectory + directoryName);
 
-                    if (fileName != "")
+                    if (!string.IsNullOrEmpty(fileName))
                     {
                         if ((File.Exists(strDirectory + directoryName + fileName) && overWrite) || (!File.Exists(strDirectory + directoryName + fileName)))
                         {
@@ -185,10 +204,15 @@ namespace Wox.Core.Plugin
                                     int size = s.Read(data, 0, data.Length);
 
                                     if (size > 0)
+                                    {
                                         streamWriter.Write(data, 0, size);
+                                    }
                                     else
+                                    {
                                         break;
+                                    }
                                 }
+
                                 streamWriter.Close();
                             }
                         }

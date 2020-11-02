@@ -2,6 +2,7 @@
 // The Microsoft Corporation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
@@ -17,7 +18,13 @@ namespace FancyZonesEditor
     /// </summary>
     public partial class LayoutPreview : UserControl
     {
-        public static readonly DependencyProperty IsActualSizeProperty = DependencyProperty.Register("IsActualSize", typeof(bool), typeof(LayoutPreview), new PropertyMetadata(false));
+        // Non-localizable strings
+        private const string PropertyZoneCountID = "ZoneCount";
+        private const string PropertyShowSpacingID = "ShowSpacing";
+        private const string PropertySpacingID = "Spacing";
+        private const string ObjectDependencyID = "IsActualSize";
+
+        public static readonly DependencyProperty IsActualSizeProperty = DependencyProperty.Register(ObjectDependencyID, typeof(bool), typeof(LayoutPreview), new PropertyMetadata(false));
 
         private LayoutModel _model;
         private List<Int32Rect> _zones = new List<Int32Rect>();
@@ -43,11 +50,11 @@ namespace FancyZonesEditor
 
         private void ZoneSettings_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
         {
-            if (e.PropertyName == "ZoneCount")
+            if (e.PropertyName == PropertyZoneCountID)
             {
                 RenderPreview();
             }
-            else if ((e.PropertyName == "ShowSpacing") || (e.PropertyName == "Spacing"))
+            else if ((e.PropertyName == PropertyShowSpacingID) || (e.PropertyName == PropertySpacingID))
             {
                 if (_model is GridLayoutModel)
                 {
@@ -106,8 +113,8 @@ namespace FancyZonesEditor
 
             int spacing = settings.ShowSpacing ? settings.Spacing : 0;
 
-            int width = (int)settings.WorkArea.Width;
-            int height = (int)settings.WorkArea.Height;
+            int width = (int)Settings.WorkArea.Width;
+            int height = (int)Settings.WorkArea.Height;
 
             double totalWidth = width - (spacing * (cols + 1));
             double totalHeight = height - (spacing * (rows + 1));
@@ -165,8 +172,8 @@ namespace FancyZonesEditor
                             maxCol++;
                         }
 
-                        rect.Width = colInfo[maxCol].End - left;
-                        rect.Height = rowInfo[maxRow].End - top;
+                        rect.Width = Math.Max(0, colInfo[maxCol].End - left);
+                        rect.Height = Math.Max(0, rowInfo[maxRow].End - top);
                         rect.StrokeThickness = 1;
                         rect.Stroke = Brushes.DarkGray;
                         rect.Fill = Brushes.LightGray;
@@ -265,8 +272,8 @@ namespace FancyZonesEditor
             Body.Children.Add(viewbox);
             Canvas frame = new Canvas
             {
-                Width = canvas.ReferenceWidth,
-                Height = canvas.ReferenceHeight,
+                Width = Settings.WorkArea.Width,
+                Height = Settings.WorkArea.Height,
             };
             viewbox.Child = frame;
             foreach (Int32Rect zone in canvas.Zones)

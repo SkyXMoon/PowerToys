@@ -1,11 +1,10 @@
 ﻿// Copyright (c) Microsoft Corporation
 // The Microsoft Corporation licenses this file to you under the MIT license.
-// See the LICENSE file in the project root for more information.  Code forked from Betsegaw Tadele's https://github.com/betsegaw/windowwalker/
+// See the LICENSE file in the project root for more information.
 
+// Code forked from Betsegaw Tadele's https://github.com/betsegaw/windowwalker/
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
 
 namespace Microsoft.Plugin.WindowWalker.Components
 {
@@ -17,12 +16,7 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// <summary>
         /// Delegate handler for open windows updates
         /// </summary>
-        public delegate void OpenWindowsUpdateHandler(object sender, SearchController.SearchResultUpdateEventArgs e);
-
-        /// <summary>
-        /// Event raised when there is an update to the list of open windows
-        /// </summary>
-        public event OpenWindowsUpdateHandler OnOpenWindowsUpdate;
+        public delegate void OpenWindowsUpdateEventHandler(object sender, SearchController.SearchResultUpdateEventArgs e);
 
         /// <summary>
         /// List of all the open windows
@@ -75,8 +69,8 @@ namespace Microsoft.Plugin.WindowWalker.Components
         public void UpdateOpenWindowsList()
         {
             windows.Clear();
-            InteropAndHelpers.CallBackPtr callbackptr = new InteropAndHelpers.CallBackPtr(WindowEnumerationCallBack);
-            InteropAndHelpers.EnumWindows(callbackptr, 0);
+            NativeMethods.CallBackPtr callbackptr = new NativeMethods.CallBackPtr(WindowEnumerationCallBack);
+            _ = NativeMethods.EnumWindows(callbackptr, 0);
         }
 
         /// <summary>
@@ -85,13 +79,13 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// <param name="hwnd">The handle to the current window being enumerated</param>
         /// <param name="lParam">Value being passed from the caller (we don't use this but might come in handy
         /// in the future</param>
-        /// <returns>true to make sure to contiue enumeration</returns>
+        /// <returns>true to make sure to continue enumeration</returns>
         public bool WindowEnumerationCallBack(IntPtr hwnd, IntPtr lParam)
         {
             Window newWindow = new Window(hwnd);
 
             if (newWindow.IsWindow && newWindow.Visible && newWindow.IsOwner &&
-                (!newWindow.IsToolWindow || newWindow.IsAppWindow ) && !newWindow.TaskListDeleted &&
+                (!newWindow.IsToolWindow || newWindow.IsAppWindow) && !newWindow.TaskListDeleted &&
                 newWindow.ClassName != "Windows.UI.Core.CoreWindow")
             {
                 windows.Add(newWindow);

@@ -5,47 +5,48 @@
 #include "common/shared_constants.h"
 
 TargetState::TargetState(int ms_delay) :
-    delay(std::chrono::milliseconds(ms_delay)), thread(&TargetState::thread_proc, this)
+    // TODO: All this processing should be done w/o a separate thread etc. in pre_wnd_proc of winkey_popup to avoid
+    //       multithreading. Use SetTimer for delayed events
+    delay(std::chrono::milliseconds(ms_delay)),
+    thread(&TargetState::thread_proc, this)
 {
 }
+
+constexpr unsigned VK_S = 0x53;
 
 bool TargetState::signal_event(unsigned vk_code, bool key_down)
 {
     std::unique_lock lock(mutex);
+    // Ignore repeated key presses
     if (!events.empty() && events.back().key_down == key_down && events.back().vk_code == vk_code)
     {
         return false;
     }
-    // Hide the overlay when WinKey + Shift + S is pressed. 0x53 is the VK code of the S key
-    if (key_down && state == Shown && vk_code == 0x53 && (GetKeyState(VK_LSHIFT) || GetKeyState(VK_RSHIFT)))
+    // Hide the overlay when WinKey + Shift + S is pressed
+    if (key_down && state == Shown && vk_code == VK_S && (GetKeyState(VK_LSHIFT) || GetKeyState(VK_RSHIFT)))
     {
         // We cannot use normal hide() here, there is stuff that needs deinitialization.
         // It can be safely done when the user releases the WinKey.
         instance->quick_hide();
     }
-    bool supress = false;
-    if (!key_down && (vk_code == VK_LWIN || vk_code == VK_RWIN) &&
-        state == Shown &&
-        std::chrono::system_clock::now() - singnal_timestamp > std::chrono::milliseconds(300) &&
-        !key_was_pressed)
-    {
-        supress = true;
-    }
+    const bool win_key_released = !key_down && (vk_code == VK_LWIN || vk_code == VK_RWIN);
+    constexpr auto overlay_fade_in_animation_time = std::chrono::milliseconds(300);
+    const auto overlay_active = state == Shown && (std::chrono::system_clock::now() - signal_timestamp > overlay_fade_in_animation_time);
+    const bool suppress_win_release = win_key_released && (state == ForceShown || overlay_active) && !nonwin_key_was_pressed_during_shown;
+
     events.push_back({ key_down, vk_code });
     lock.unlock();
     cv.notify_one();
-    if (supress)
+    if (suppress_win_release)
     {
-        // Send a fake key-stroke to prevent the start menu from appearing.
-        // We use 0xCF VK code, which is reserved. It still prevents the
-        // start menu from appearing, but should not interfere with any
-        // keyboard shortcuts.
+        // Send a 0xFF VK code, which is outside of the VK code range, to prevent
+        // the start menu from appearing.
         INPUT input[3] = { {}, {}, {} };
         input[0].type = INPUT_KEYBOARD;
-        input[0].ki.wVk = 0xCF;
+        input[0].ki.wVk = 0xFF;
         input[0].ki.dwExtraInfo = CommonSharedConstants::KEYBOARDMANAGER_INJECTED_FLAG;
         input[1].type = INPUT_KEYBOARD;
-        input[1].ki.wVk = 0xCF;
+        input[1].ki.wVk = 0xFF;
         input[1].ki.dwFlags = KEYEVENTF_KEYUP;
         input[1].ki.dwExtraInfo = CommonSharedConstants::KEYBOARDMANAGER_INJECTED_FLAG;
         input[2].type = INPUT_KEYBOARD;
@@ -54,12 +55,17 @@ bool TargetState::signal_event(unsigned vk_code, bool key_down)
         input[2].ki.dwExtraInfo = CommonSharedConstants::KEYBOARDMANAGER_INJECTED_FLAG;
         SendInput(3, input, sizeof(INPUT));
     }
-    return supress;
+    return suppress_win_release;
 }
 
-void TargetState::was_hiden()
+void TargetState::was_hidden()
 {
-    std::unique_lock<std::mutex> lock(mutex);
+    std::unique_lock<std::recursive_mutex> lock(mutex);
+    // Ignore callbacks from the D2DOverlayWindow
+    if (state == ForceShown)
+    {
+        return;
+    }
     state = Hidden;
     events.clear();
     lock.unlock();
@@ -98,7 +104,7 @@ void TargetState::handle_hidden()
     }
 }
 
-void TargetState::handle_shown()
+void TargetState::handle_shown(const bool forced)
 {
     std::unique_lock lock(mutex);
     if (events.empty())
@@ -110,19 +116,18 @@ void TargetState::handle_shown()
         return;
     }
     auto event = next();
-    if (event.key_down && (event.vk_code == VK_LWIN || event.vk_code == VK_RWIN))
+    if (event.vk_code == VK_LWIN || event.vk_code == VK_RWIN)
     {
+        if (!forced && (!event.key_down || !winkey_held()))
+        {
+            state = Hidden;
+        }
         return;
     }
-    if (!event.key_down && (event.vk_code == VK_LWIN || event.vk_code == VK_RWIN) || !winkey_held())
-    {
-        state = Hidden;
-        lock.unlock();
-        return;
-    }
+
     if (event.key_down)
     {
-        key_was_pressed = true;
+        nonwin_key_was_pressed_during_shown = true;
         lock.unlock();
         instance->on_held_press(event.vk_code);
     }
@@ -141,7 +146,10 @@ void TargetState::thread_proc()
             handle_timeout();
             break;
         case Shown:
-            handle_shown();
+            handle_shown(false);
+            break;
+        case ForceShown:
+            handle_shown(true);
             break;
         case Exiting:
         default:
@@ -155,9 +163,15 @@ void TargetState::handle_timeout()
     std::unique_lock lock(mutex);
     auto wait_time = delay - (std::chrono::system_clock::now() - winkey_timestamp);
     if (events.empty())
+    {
         cv.wait_for(lock, wait_time);
+    }
     if (state == Exiting)
+    {
         return;
+    }
+
+    // Skip all VK_*WIN-down events
     while (!events.empty())
     {
         auto event = events.front();
@@ -166,15 +180,20 @@ void TargetState::handle_timeout()
         else
             break;
     }
+    // If we've detected that a user is holding anything other than VK_*WIN or start menu is visible, we should hide
     if (!events.empty() || !only_winkey_key_held() || is_start_visible())
     {
         state = Hidden;
         return;
     }
+
     if (std::chrono::system_clock::now() - winkey_timestamp < delay)
+    {
         return;
-    singnal_timestamp = std::chrono::system_clock::now();
-    key_was_pressed = false;
+    }
+
+    signal_timestamp = std::chrono::system_clock::now();
+    nonwin_key_was_pressed_during_shown = false;
     state = Shown;
     lock.unlock();
     instance->on_held();
@@ -182,5 +201,26 @@ void TargetState::handle_timeout()
 
 void TargetState::set_delay(int ms_delay)
 {
+    std::unique_lock lock(mutex);
     delay = std::chrono::milliseconds(ms_delay);
+}
+
+void TargetState::toggle_force_shown()
+{
+    std::unique_lock lock(mutex);
+    events.clear();
+    if (state != ForceShown)
+    {
+        state = ForceShown;
+        instance->on_held();
+    }
+    else
+    {
+        state = Hidden;
+    }
+}
+
+bool TargetState::active() const
+{
+    return state == ForceShown || state == Shown;
 }

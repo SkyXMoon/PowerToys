@@ -1,38 +1,40 @@
-using Microsoft.PowerToys.Settings.UI.Lib;
+// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
-using System.IO;
 using System.Linq;
-using System.Text.RegularExpressions;
-using System.Windows;
 using System.Windows.Controls;
-using Wox.Infrastructure;
+using ManagedCommon;
+using Microsoft.Plugin.Folder.Sources;
+using Microsoft.PowerToys.Settings.UI.Library;
 using Wox.Infrastructure.Storage;
 using Wox.Plugin;
 
 namespace Microsoft.Plugin.Folder
 {
-    public class Main : IPlugin, ISettingProvider, IPluginI18n, ISavable, IContextMenu
+    public class Main : IPlugin, ISettingProvider, IPluginI18n, ISavable, IContextMenu, IDisposable
     {
-        public const string FolderImagePath = "Images\\folder.png";
-        public const string FileImagePath = "Images\\file.png";
-        public const string DeleteFileFolderImagePath = "Images\\deletefilefolder.png";
-        public const string CopyImagePath = "Images\\copy.png";
+        public const string FolderImagePath = "Images\\folder.dark.png";
+        public const string FileImagePath = "Images\\file.dark.png";
+        public const string DeleteFileFolderImagePath = "Images\\delete.dark.png";
+        public const string CopyImagePath = "Images\\copy.dark.png";
 
-        private const string _fileExplorerProgramName = "explorer";
-        private static List<string> _driverNames;
-        private PluginInitContext _context;
+        private static readonly PluginJsonStorage<FolderSettings> _storage = new PluginJsonStorage<FolderSettings>();
+        private static readonly FolderSettings _settings = _storage.Load();
+        private static readonly IQueryInternalDirectory _internalDirectory = new QueryInternalDirectory(_settings, new QueryFileSystemInfo());
+        private static readonly FolderHelper _folderHelper = new FolderHelper(new DriveInformation(), new FolderLinksSettings(_settings));
 
-        private readonly Settings _settings;
-        private readonly PluginJsonStorage<Settings> _storage;
-        private IContextMenu _contextMenuLoader;
-
-        public Main()
+        private static readonly ICollection<IFolderProcessor> _processors = new IFolderProcessor[]
         {
-            _storage = new PluginJsonStorage<Settings>();
-            _settings = _storage.Load();
-        }
+            new UserFolderProcessor(_folderHelper),
+            new InternalDirectoryProcessor(_folderHelper, _internalDirectory),
+        };
+
+        private static PluginInitContext _context;
+        private IContextMenu _contextMenuLoader;
+        private bool _disposed;
 
         public void Save()
         {
@@ -41,246 +43,73 @@ namespace Microsoft.Plugin.Folder
 
         public Control CreateSettingPanel()
         {
-            return new FileSystemSettings(_context.API, _settings);
-        }
-
-        public void Init(PluginInitContext context)
-        {
-            _context = context;
-            _contextMenuLoader = new ContextMenuLoader(context);
-            InitialDriverList();
+            throw new NotImplementedException();
         }
 
         public List<Result> Query(Query query)
         {
-            var results = GetUserFolderResults(query);
-
-            string search = query.Search.ToLower();
-            if (!IsDriveOrSharedFolder(search))
-                return results;
-
-            results.AddRange(QueryInternal_Directory_Exists(query));
-
-            // todo why was this hack here?
-            foreach (var result in results)
+            if (query == null)
             {
-                result.Score += 10;
+                throw new ArgumentNullException(paramName: nameof(query));
             }
 
-            return results;
+            var expandedName = FolderHelper.Expand(query.Search);
+
+            return _processors.SelectMany(processor => processor.Results(query.ActionKeyword, expandedName))
+                .Select(res => res.Create(_context.API))
+                .Select(AddScore)
+                .ToList();
         }
 
-        private static bool IsDriveOrSharedFolder(string search)
+        public void Init(PluginInitContext context)
         {
-            if (search.StartsWith(@"\\"))
-            { // share folder
-                return true;
-            }
+            _context = context ?? throw new ArgumentNullException(nameof(context));
+            _contextMenuLoader = new ContextMenuLoader(context);
 
-            if (_driverNames != null && _driverNames.Any(search.StartsWith))
-            { // normal drive letter
-                return true;
-            }
-
-            if (_driverNames == null && search.Length > 2 && char.IsLetter(search[0]) && search[1] == ':')
-            { // when we don't have the drive letters we can try...
-                return true; // we don't know so let's give it the possibility
-            }
-
-            return false;
+            _context.API.ThemeChanged += OnThemeChanged;
+            UpdateIconPath(_context.API.GetCurrentTheme());
         }
 
-        private Result CreateFolderResult(string title, string subtitle, string path, Query query)
+        public static IEnumerable<Result> GetFolderPluginResults(Query query)
         {
-            return new Result
+            if (query == null)
             {
-                Title = title,
-                IcoPath = path,
-                SubTitle = "Folder: " + subtitle,
-                QueryTextDisplay = path,
-                TitleHighlightData = StringMatcher.FuzzySearch(query.Search, title).MatchData,
-                ContextData = new SearchResult { Type = ResultType.Folder, FullPath = path },
-                Action = c =>
-                {
-                    Process.Start(_fileExplorerProgramName, path);
-                    return true;
-                }
-            };
+                throw new ArgumentNullException(paramName: nameof(query));
+            }
+
+            var expandedName = FolderHelper.Expand(query.Search);
+
+            return _processors.SelectMany(processor => processor.Results(query.ActionKeyword, expandedName))
+                .Select(res => res.Create(_context.API))
+                .Select(AddScore);
         }
 
-        private List<Result> GetUserFolderResults(Query query)
+        private static void UpdateIconPath(Theme theme)
         {
-            string search = query.Search.ToLower();
-            var userFolderLinks = _settings.FolderLinks.Where(
-                x => x.Nickname.StartsWith(search, StringComparison.OrdinalIgnoreCase));
-            var results = userFolderLinks.Select(item =>
-                CreateFolderResult(item.Nickname, item.Path, item.Path, query)).ToList();
-            return results;
+            QueryInternalDirectory.SetWarningIcon(theme);
         }
 
-        private void InitialDriverList()
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("StyleCop.CSharp.NamingRules", "SA1313:Parameter names should begin with lower-case letter", Justification = "The parameter is unused")]
+        private static void OnThemeChanged(Theme _, Theme newTheme)
         {
-            if (_driverNames == null)
-            {
-                _driverNames = new List<string>();
-                var allDrives = DriveInfo.GetDrives();
-                foreach (DriveInfo driver in allDrives)
-                {
-                    _driverNames.Add(driver.Name.ToLower().TrimEnd('\\'));
-                }
-            }
+            UpdateIconPath(newTheme);
         }
 
-        private static readonly char[] _specialSearchChars = new char[]
+        // todo why was this hack here?
+        private static Result AddScore(Result result)
         {
-            '?', '*', '>'
-        };
-
-        private List<Result> QueryInternal_Directory_Exists(Query query)
-        {
-            var search = query.Search;
-            var results = new List<Result>();
-            var hasSpecial = search.IndexOfAny(_specialSearchChars) >= 0;
-            string incompleteName = "";
-            if (hasSpecial || !Directory.Exists(search + "\\"))
-            {
-                // if folder doesn't exist, we want to take the last part and use it afterwards to help the user 
-                // find the right folder.
-                int index = search.LastIndexOf('\\');
-                if (index > 0 && index < (search.Length - 1))
-                {
-                    incompleteName = search.Substring(index + 1).ToLower();
-                    search = search.Substring(0, index + 1);
-                    if (!Directory.Exists(search))
-                    {
-                        return results;
-                    }
-                }
-                else
-                {
-                    return results;
-                }
-            }
-            else
-            {
-                // folder exist, add \ at the end of doesn't exist
-                if (!search.EndsWith("\\"))
-                {
-                    search += "\\";
-                }
-            }
-
-            results.Add(CreateOpenCurrentFolderResult(incompleteName, search));
-
-            var searchOption = SearchOption.TopDirectoryOnly;
-            incompleteName += "*";
-
-            // give the ability to search all folder when starting with >
-            if (incompleteName.StartsWith(">"))
-            {
-                searchOption = SearchOption.AllDirectories;
-
-                // match everything before and after search term using supported wildcard '*', ie. *searchterm*
-                incompleteName = "*" + incompleteName.Substring(1);
-            }
-
-            var folderList = new List<Result>();
-            var fileList = new List<Result>();
-
-            try
-            {
-                // search folder and add results
-                var directoryInfo = new DirectoryInfo(search);
-                var fileSystemInfos = directoryInfo.GetFileSystemInfos(incompleteName, searchOption);
-
-                foreach (var fileSystemInfo in fileSystemInfos)
-                {
-                    if ((fileSystemInfo.Attributes & FileAttributes.Hidden) == FileAttributes.Hidden) continue;
-
-                    if(fileSystemInfo is DirectoryInfo)
-                    {
-                        var folderSubtitleString = fileSystemInfo.FullName;
-
-                        folderList.Add(CreateFolderResult(fileSystemInfo.Name, folderSubtitleString, fileSystemInfo.FullName, query));
-                    }
-                    else
-                    {
-                        fileList.Add(CreateFileResult(fileSystemInfo.FullName, query));
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                if (e is UnauthorizedAccessException || e is ArgumentException)
-                {
-                    results.Add(new Result { Title = e.Message, Score = 501 });
-
-                    return results;
-                }
-
-                throw;
-            }
-
-            // Intial ordering, this order can be updated later by UpdateResultView.MainViewModel based on history of user selection.
-            return results.Concat(folderList.OrderBy(x => x.Title)).Concat(fileList.OrderBy(x => x.Title)).ToList();
-        }
-
-        private static Result CreateFileResult(string filePath, Query query)
-        {
-            var result = new Result
-            {
-                Title = Path.GetFileName(filePath),
-                SubTitle = "Folder: " + filePath,
-                IcoPath = filePath,
-                TitleHighlightData = StringMatcher.FuzzySearch(query.Search, Path.GetFileName(filePath)).MatchData,
-                Action = c =>
-                {
-                    try
-                    {
-                        Process.Start(_fileExplorerProgramName, filePath);
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show(ex.Message, "Could not start " + filePath);
-                    }
-
-                    return true;
-                },
-                ContextData = new SearchResult { Type = ResultType.File, FullPath = filePath}
-            };
+            result.Score += 10;
             return result;
-        }
-
-        private static Result CreateOpenCurrentFolderResult(string incompleteName, string search)
-        {
-            var firstResult = "Open " + search;
-
-            var folderName = search.TrimEnd('\\').Split(new[] { Path.DirectorySeparatorChar }, StringSplitOptions.None).Last();
-            var sanitizedPath = Regex.Replace(search, @"[\/\\]+", "\\");
-
-            return new Result
-            {
-                Title = firstResult,
-                QueryTextDisplay = search,
-                SubTitle = $"Folder: Use > to search within the directory. Use * to search for file extensions. Or use both >*.",
-                IcoPath = search,
-                Score = 500,
-                Action = c =>
-                {
-                    Process.Start(_fileExplorerProgramName, sanitizedPath);
-                    return true;
-                }
-            };
         }
 
         public string GetTranslatedPluginTitle()
         {
-            return _context.API.GetTranslation("wox_plugin_folder_plugin_name");
+            return Properties.Resources.wox_plugin_folder_plugin_name;
         }
 
         public string GetTranslatedPluginDescription()
         {
-            return _context.API.GetTranslation("wox_plugin_folder_plugin_description");
+            return Properties.Resources.wox_plugin_folder_plugin_description;
         }
 
         public List<ContextMenuResult> LoadContextMenus(Result selectedResult)
@@ -290,7 +119,24 @@ namespace Microsoft.Plugin.Folder
 
         public void UpdateSettings(PowerLauncherSettings settings)
         {
+        }
 
+        public void Dispose()
+        {
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
+            {
+                if (disposing)
+                {
+                    _context.API.ThemeChanged -= OnThemeChanged;
+                    _disposed = true;
+                }
+            }
         }
     }
 }

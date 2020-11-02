@@ -4,6 +4,21 @@
 #include "KeyDropDownControl.h"
 #include "XamlBridge.h"
 #include <keyboardmanager/common/trace.h>
+#include <keyboardmanager/common/KeyboardManagerConstants.h>
+#include <set>
+#include <common/windows_colors.h>
+#include <common/dpi_aware.h>
+#include "Styles.h"
+#include "Dialog.h"
+#include <keyboardmanager/dll/Generated Files/resource.h>
+#include "../common/shared_constants.h"
+#include "keyboardmanager/common/KeyboardManagerState.h"
+#include "common/common.h"
+#include "LoadingAndSavingRemappingHelper.h"
+#include "UIHelpers.h"
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+
+using namespace winrt::Windows::Foundation;
 
 LRESULT CALLBACK EditKeyboardWindowProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -16,6 +31,63 @@ HWND hwndEditKeyboardNativeWindow = nullptr;
 std::mutex editKeyboardWindowMutex;
 // Stores a pointer to the Xaml Bridge object so that it can be accessed from the window procedure
 static XamlBridge* xamlBridgePtr = nullptr;
+
+static IAsyncOperation<bool> OrphanKeysConfirmationDialog(
+    KeyboardManagerState& state,
+    const std::vector<DWORD>& keys,
+    XamlRoot root)
+{
+    ContentDialog confirmationDialog;
+    confirmationDialog.XamlRoot(root);
+    confirmationDialog.Title(box_value(GET_RESOURCE_STRING(IDS_EDITKEYBOARD_ORPHANEDDIALOGTITLE)));
+    confirmationDialog.Content(nullptr);
+    confirmationDialog.IsPrimaryButtonEnabled(true);
+    confirmationDialog.DefaultButton(ContentDialogButton::Primary);
+    confirmationDialog.PrimaryButtonText(winrt::hstring(GET_RESOURCE_STRING(IDS_CONTINUE_BUTTON)));
+    confirmationDialog.IsSecondaryButtonEnabled(true);
+    confirmationDialog.SecondaryButtonText(winrt::hstring(GET_RESOURCE_STRING(IDS_CANCEL_BUTTON)));
+
+    TextBlock orphanKeysBlock;
+    std::wstring orphanKeyString;
+    for (auto k : keys)
+    {
+        orphanKeyString.append(state.keyboardMap.GetKeyName(k));
+        orphanKeyString.append(L", ");
+    }
+    orphanKeyString = orphanKeyString.substr(0, max(0, orphanKeyString.length() - 2));
+    orphanKeysBlock.Text(winrt::hstring(orphanKeyString));
+    orphanKeysBlock.TextWrapping(TextWrapping::Wrap);
+    confirmationDialog.Content(orphanKeysBlock);
+
+    ContentDialogResult res = co_await confirmationDialog.ShowAsync();
+
+    co_return res == ContentDialogResult::Primary;
+}
+
+static IAsyncAction OnClickAccept(KeyboardManagerState& keyboardManagerState, XamlRoot root, std::function<void()> ApplyRemappings)
+{
+    KeyboardManagerHelper::ErrorType isSuccess = LoadingAndSavingRemappingHelper::CheckIfRemappingsAreValid(SingleKeyRemapControl::singleKeyRemapBuffer);
+
+    if (isSuccess != KeyboardManagerHelper::ErrorType::NoError)
+    {
+        if (!co_await Dialog::PartialRemappingConfirmationDialog(root, GET_RESOURCE_STRING(IDS_EDITKEYBOARD_PARTIALCONFIRMATIONDIALOGTITLE)))
+        {
+            co_return;
+        }
+    }
+
+    // Check for orphaned keys
+    // Draw content Dialog
+    std::vector<DWORD> orphanedKeys = LoadingAndSavingRemappingHelper::GetOrphanedKeys(SingleKeyRemapControl::singleKeyRemapBuffer);
+    if (orphanedKeys.size() > 0)
+    {
+        if (!co_await OrphanKeysConfirmationDialog(keyboardManagerState, orphanedKeys, root))
+        {
+            co_return;
+        }
+    }
+    ApplyRemappings();
+}
 
 // Function to create the Edit Keyboard Window
 void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardManagerState)
@@ -30,10 +102,16 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
         windowClass.hInstance = hInst;
         windowClass.lpszClassName = szWindowClass;
         windowClass.hbrBackground = (HBRUSH)(COLOR_WINDOW);
-        windowClass.hIconSm = LoadIcon(windowClass.hInstance, IDI_APPLICATION);
+        windowClass.hIcon = (HICON)LoadImageW(
+            windowClass.hInstance,
+            MAKEINTRESOURCE(IDS_KEYBOARDMANAGER_ICON),
+            IMAGE_ICON,
+            48,
+            48,
+            LR_DEFAULTCOLOR);
         if (RegisterClassEx(&windowClass) == NULL)
         {
-            MessageBox(NULL, L"Windows registration failed!", L"Error", NULL);
+            MessageBox(NULL, GET_RESOURCE_STRING(IDS_REGISTERCLASSFAILED_ERRORMESSAGE).c_str(), GET_RESOURCE_STRING(IDS_REGISTERCLASSFAILED_ERRORTITLE).c_str(), NULL);
             return;
         }
 
@@ -43,15 +121,16 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
     // Find center screen coordinates
     RECT desktopRect;
     GetClientRect(GetDesktopWindow(), &desktopRect);
-    // Calculate resolution dependent window size
-    int windowWidth = KeyboardManagerConstants::DefaultEditKeyboardWindowWidth * desktopRect.right;
-    int windowHeight = KeyboardManagerConstants::DefaultEditKeyboardWindowHeight * desktopRect.bottom;
+    // Calculate DPI dependent window size
+    int windowWidth = KeyboardManagerConstants::DefaultEditKeyboardWindowWidth;
+    int windowHeight = KeyboardManagerConstants::DefaultEditKeyboardWindowHeight;
+    DPIAware::Convert(nullptr, windowWidth, windowHeight);
 
     // Window Creation
     HWND _hWndEditKeyboardWindow = CreateWindow(
         szWindowClass,
-        L"Remap Keyboard",
-        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        GET_RESOURCE_STRING(IDS_EDITKEYBOARD_WINDOWNAME).c_str(),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MAXIMIZEBOX,
         (desktopRect.right / 2) - (windowWidth / 2),
         (desktopRect.bottom / 2) - (windowHeight / 2),
         windowWidth,
@@ -62,7 +141,7 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
         NULL);
     if (_hWndEditKeyboardWindow == NULL)
     {
-        MessageBox(NULL, L"Call to CreateWindow failed!", L"Error", NULL);
+        MessageBox(NULL, GET_RESOURCE_STRING(IDS_CREATEWINDOWFAILED_ERRORMESSAGE).c_str(), GET_RESOURCE_STRING(IDS_CREATEWINDOWFAILED_ERRORTITLE).c_str(), NULL);
         return;
     }
     // Ensures the window is in foreground on first startup. If this is not done, the window appears behind because the thread is not on the foreground.
@@ -92,15 +171,15 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
 
     // Header text
     TextBlock headerText;
-    headerText.Text(L"Remap Keyboard");
+    headerText.Text(GET_RESOURCE_STRING(IDS_EDITKEYBOARD_WINDOWNAME));
     headerText.FontSize(30);
     headerText.Margin({ 0, 0, 0, 0 });
     header.SetAlignLeftWithPanel(headerText, true);
 
     // Header Cancel button
     Button cancelButton;
-    cancelButton.Content(winrt::box_value(L"Cancel"));
-    cancelButton.Margin({ 0, 0, 10, 0 });
+    cancelButton.Content(winrt::box_value(GET_RESOURCE_STRING(IDS_CANCEL_BUTTON)));
+    cancelButton.Margin({ 10, 0, 0, 0 });
     cancelButton.Click([&](winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const&) {
         // Close the window since settings do not need to be saved
         PostMessage(_hWndEditKeyboardWindow, WM_CLOSE, 0, 0);
@@ -108,13 +187,13 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
 
     //  Text block for information about remap key section.
     TextBlock keyRemapInfoHeader;
-    keyRemapInfoHeader.Text(L"Select the key you want to change (Original Key) and the key you want it to become (New Key).");
+    keyRemapInfoHeader.Text(GET_RESOURCE_STRING(IDS_EDITKEYBOARD_INFO));
     keyRemapInfoHeader.Margin({ 10, 0, 0, 10 });
     keyRemapInfoHeader.FontWeight(Text::FontWeights::SemiBold());
     keyRemapInfoHeader.TextWrapping(TextWrapping::Wrap);
 
     TextBlock keyRemapInfoExample;
-    keyRemapInfoExample.Text(L"For example, if you want to press A and get B, Key A would be your \"Original Key\" and Key B would be your \"New Key\".");
+    keyRemapInfoExample.Text(GET_RESOURCE_STRING(IDS_EDITKEYBOARD_INFOEXAMPLE));
     keyRemapInfoExample.Margin({ 10, 0, 0, 20 });
     keyRemapInfoExample.FontStyle(Text::FontStyle::Italic);
     keyRemapInfoExample.TextWrapping(TextWrapping::Wrap);
@@ -127,30 +206,28 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
     ColumnDefinition arrowColumn;
     arrowColumn.MinWidth(KeyboardManagerConstants::TableArrowColWidth);
     ColumnDefinition newColumn;
-    newColumn.MinWidth(KeyboardManagerConstants::RemapTableDropDownWidth);
-    newColumn.MaxWidth(KeyboardManagerConstants::RemapTableDropDownWidth);
+    newColumn.MinWidth(3 * KeyboardManagerConstants::ShortcutTableDropDownWidth + 2 * KeyboardManagerConstants::ShortcutTableDropDownSpacing);
+    newColumn.MaxWidth(3 * KeyboardManagerConstants::ShortcutTableDropDownWidth + 2 * KeyboardManagerConstants::ShortcutTableDropDownSpacing);
     ColumnDefinition removeColumn;
     removeColumn.MinWidth(KeyboardManagerConstants::TableRemoveColWidth);
-    ColumnDefinition warnColumn;
-    warnColumn.MinWidth(KeyboardManagerConstants::TableWarningColWidth);
     keyRemapTable.Margin({ 10, 10, 10, 20 });
     keyRemapTable.HorizontalAlignment(HorizontalAlignment::Stretch);
     keyRemapTable.ColumnDefinitions().Append(originalColumn);
     keyRemapTable.ColumnDefinitions().Append(arrowColumn);
     keyRemapTable.ColumnDefinitions().Append(newColumn);
     keyRemapTable.ColumnDefinitions().Append(removeColumn);
-    keyRemapTable.ColumnDefinitions().Append(warnColumn);
     keyRemapTable.RowDefinitions().Append(RowDefinition());
+    keyRemapTable.MinWidth(KeyboardManagerConstants::EditKeyboardTableMinWidth);
 
     // First header textblock in the header row of the keys remap table
     TextBlock originalKeyRemapHeader;
-    originalKeyRemapHeader.Text(L"Original Key:");
+    originalKeyRemapHeader.Text(GET_RESOURCE_STRING(IDS_EDITKEYBOARD_SOURCEHEADER));
     originalKeyRemapHeader.FontWeight(Text::FontWeights::Bold());
     originalKeyRemapHeader.Margin({ 0, 0, 0, 10 });
 
     // Second header textblock in the header row of the keys remap table
     TextBlock newKeyRemapHeader;
-    newKeyRemapHeader.Text(L"New Key:");
+    newKeyRemapHeader.Text(GET_RESOURCE_STRING(IDS_EDITKEYBOARD_TARGETHEADER));
     newKeyRemapHeader.FontWeight(Text::FontWeights::Bold());
     newKeyRemapHeader.Margin({ 0, 0, 0, 10 });
 
@@ -161,11 +238,6 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
 
     keyRemapTable.Children().Append(originalKeyRemapHeader);
     keyRemapTable.Children().Append(newKeyRemapHeader);
-
-    // Message to display success/failure of saving settings.
-    Flyout applyFlyout;
-    TextBlock settingsMessage;
-    applyFlyout.Content(settingsMessage);
 
     // Store handle of edit keyboard window
     SingleKeyRemapControl::EditKeyboardWindowHandle = _hWndEditKeyboardWindow;
@@ -181,51 +253,9 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
     keyboardManagerState.SetUIState(KeyboardManagerUIState::EditKeyboardWindowActivated, _hWndEditKeyboardWindow);
 
     // Load existing remaps into UI
-    std::unique_lock<std::mutex> lock(keyboardManagerState.singleKeyReMap_mutex);
-    std::unordered_map<DWORD, DWORD> singleKeyRemapCopy = keyboardManagerState.singleKeyReMap;
-    lock.unlock();
+    SingleKeyRemapTable singleKeyRemapCopy = keyboardManagerState.singleKeyReMap;
 
-    // Pre process the table to combine L and R versions of Ctrl/Alt/Shift/Win that are mapped to the same key
-    if (singleKeyRemapCopy.find(VK_LCONTROL) != singleKeyRemapCopy.end() && singleKeyRemapCopy.find(VK_RCONTROL) != singleKeyRemapCopy.end())
-    {
-        // If they are mapped to the same key, delete those entries and set the common version
-        if (singleKeyRemapCopy[VK_LCONTROL] == singleKeyRemapCopy[VK_RCONTROL])
-        {
-            singleKeyRemapCopy[VK_CONTROL] = singleKeyRemapCopy[VK_LCONTROL];
-            singleKeyRemapCopy.erase(VK_LCONTROL);
-            singleKeyRemapCopy.erase(VK_RCONTROL);
-        }
-    }
-    if (singleKeyRemapCopy.find(VK_LMENU) != singleKeyRemapCopy.end() && singleKeyRemapCopy.find(VK_RMENU) != singleKeyRemapCopy.end())
-    {
-        // If they are mapped to the same key, delete those entries and set the common version
-        if (singleKeyRemapCopy[VK_LMENU] == singleKeyRemapCopy[VK_RMENU])
-        {
-            singleKeyRemapCopy[VK_MENU] = singleKeyRemapCopy[VK_LMENU];
-            singleKeyRemapCopy.erase(VK_LMENU);
-            singleKeyRemapCopy.erase(VK_RMENU);
-        }
-    }
-    if (singleKeyRemapCopy.find(VK_LSHIFT) != singleKeyRemapCopy.end() && singleKeyRemapCopy.find(VK_RSHIFT) != singleKeyRemapCopy.end())
-    {
-        // If they are mapped to the same key, delete those entries and set the common version
-        if (singleKeyRemapCopy[VK_LSHIFT] == singleKeyRemapCopy[VK_RSHIFT])
-        {
-            singleKeyRemapCopy[VK_SHIFT] = singleKeyRemapCopy[VK_LSHIFT];
-            singleKeyRemapCopy.erase(VK_LSHIFT);
-            singleKeyRemapCopy.erase(VK_RSHIFT);
-        }
-    }
-    if (singleKeyRemapCopy.find(VK_LWIN) != singleKeyRemapCopy.end() && singleKeyRemapCopy.find(VK_RWIN) != singleKeyRemapCopy.end())
-    {
-        // If they are mapped to the same key, delete those entries and set the common version
-        if (singleKeyRemapCopy[VK_LWIN] == singleKeyRemapCopy[VK_RWIN])
-        {
-            singleKeyRemapCopy[CommonSharedConstants::VK_WIN_BOTH] = singleKeyRemapCopy[VK_LWIN];
-            singleKeyRemapCopy.erase(VK_LWIN);
-            singleKeyRemapCopy.erase(VK_RWIN);
-        }
-    }
+    LoadingAndSavingRemappingHelper::PreProcessRemapTable(singleKeyRemapCopy);
 
     for (const auto& it : singleKeyRemapCopy)
     {
@@ -234,117 +264,88 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
 
     // Main Header Apply button
     Button applyButton;
-    applyButton.Content(winrt::box_value(L"Apply"));
-    header.SetAlignRightWithPanel(applyButton, true);
-    header.SetLeftOf(cancelButton, applyButton);
-    applyButton.Flyout(applyFlyout);
-    applyButton.Click([&](winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const&) {
-        KeyboardManagerHelper::ErrorType isSuccess = KeyboardManagerHelper::ErrorType::NoError;
-        // Clear existing Key Remaps
-        keyboardManagerState.ClearSingleKeyRemaps();
-        DWORD successfulRemapCount = 0;
-        for (int i = 0; i < SingleKeyRemapControl::singleKeyRemapBuffer.size(); i++)
-        {
-            DWORD originalKey = SingleKeyRemapControl::singleKeyRemapBuffer[i][0];
-            DWORD newKey = SingleKeyRemapControl::singleKeyRemapBuffer[i][1];
+    applyButton.Content(winrt::box_value(GET_RESOURCE_STRING(IDS_OK_BUTTON)));
+    applyButton.Style(AccentButtonStyle());
+    applyButton.MinWidth(KeyboardManagerConstants::HeaderButtonWidth);
+    cancelButton.MinWidth(KeyboardManagerConstants::HeaderButtonWidth);
+    header.SetAlignRightWithPanel(cancelButton, true);
+    header.SetLeftOf(applyButton, cancelButton);
 
-            if (originalKey != NULL && newKey != NULL)
-            {
-                // If Ctrl/Alt/Shift are added, add their L and R versions instead to the same key
-                bool result = false;
-                bool res1, res2;
-                switch (originalKey)
-                {
-                case VK_CONTROL:
-                    res1 = keyboardManagerState.AddSingleKeyRemap(VK_LCONTROL, newKey);
-                    res2 = keyboardManagerState.AddSingleKeyRemap(VK_RCONTROL, newKey);
-                    result = res1 && res2;
-                    break;
-                case VK_MENU:
-                    res1 = keyboardManagerState.AddSingleKeyRemap(VK_LMENU, newKey);
-                    res2 = keyboardManagerState.AddSingleKeyRemap(VK_RMENU, newKey);
-                    result = res1 && res2;
-                    break;
-                case VK_SHIFT:
-                    res1 = keyboardManagerState.AddSingleKeyRemap(VK_LSHIFT, newKey);
-                    res2 = keyboardManagerState.AddSingleKeyRemap(VK_RSHIFT, newKey);
-                    result = res1 && res2;
-                    break;
-                case CommonSharedConstants::VK_WIN_BOTH:
-                    res1 = keyboardManagerState.AddSingleKeyRemap(VK_LWIN, newKey);
-                    res2 = keyboardManagerState.AddSingleKeyRemap(VK_RWIN, newKey);
-                    result = res1 && res2;
-                    break;
-                default:
-                    result = keyboardManagerState.AddSingleKeyRemap(originalKey, newKey);
-                }
+    auto ApplyRemappings = [&keyboardManagerState, _hWndEditKeyboardWindow]() {
+        // Disable the remappings while the remapping table is updated
+        keyboardManagerState.RemappingsDisabledWrapper(
+            [&keyboardManagerState]() {
+                LoadingAndSavingRemappingHelper::ApplySingleKeyRemappings(keyboardManagerState, SingleKeyRemapControl::singleKeyRemapBuffer, true);
+                // Save the updated shortcuts remaps to file.
+                bool saveResult = keyboardManagerState.SaveConfigToFile();
+            });
+        PostMessage(_hWndEditKeyboardWindow, WM_CLOSE, 0, 0);
+    };
 
-                if (!result)
-                {
-                    isSuccess = KeyboardManagerHelper::ErrorType::RemapUnsuccessful;
-                    // Tooltip is already shown for this row
-                }
-                else
-                {
-                    successfulRemapCount += 1;
-                }
-            }
-            else
-            {
-                isSuccess = KeyboardManagerHelper::ErrorType::RemapUnsuccessful;
-                // Show tooltip warning on the problematic row
-                uint32_t warningIndex;
-                // headers at start, colcount in each row, and last element of each row
-                warningIndex = KeyboardManagerConstants::RemapTableHeaderCount + ((i + 1) * KeyboardManagerConstants::RemapTableColCount) - 1;
-                FontIcon warning = keyRemapTable.Children().GetAt(warningIndex).as<FontIcon>();
-                ToolTip t = ToolTipService::GetToolTip(warning).as<ToolTip>();
-                t.Content(box_value(KeyboardManagerHelper::GetErrorMessage(KeyboardManagerHelper::ErrorType::MissingKey)));
-                warning.Visibility(Visibility::Visible);
-            }
-        }
-
-        // Save the updated shortcuts remaps to file.
-        bool saveResult = keyboardManagerState.SaveConfigToFile();
-        if (!saveResult)
-        {
-            isSuccess = KeyboardManagerHelper::ErrorType::SaveFailed;
-        }
-        Trace::KeyRemapCount(successfulRemapCount);
-        settingsMessage.Text(KeyboardManagerHelper::GetErrorMessage(isSuccess));
+    applyButton.Click([&keyboardManagerState, ApplyRemappings, applyButton](winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const&) {
+        OnClickAccept(keyboardManagerState, applyButton.XamlRoot(), ApplyRemappings);
     });
 
     header.Children().Append(headerText);
-    header.Children().Append(cancelButton);
     header.Children().Append(applyButton);
+    header.Children().Append(cancelButton);
+
+    ScrollViewer scrollViewer;
+    scrollViewer.VerticalScrollMode(ScrollMode::Enabled);
+    scrollViewer.HorizontalScrollMode(ScrollMode::Enabled);
+    scrollViewer.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+    scrollViewer.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto);
 
     // Add remap key button
     Windows::UI::Xaml::Controls::Button addRemapKey;
     FontIcon plusSymbol;
-    plusSymbol.FontFamily(Xaml::Media::FontFamily(L"Segoe MDL2 Assets"));
+    plusSymbol.FontFamily(Media::FontFamily(L"Segoe MDL2 Assets"));
     plusSymbol.Glyph(L"\xE109");
     addRemapKey.Content(plusSymbol);
-    addRemapKey.Margin({ 10, 0, 0, 25 });
+    addRemapKey.Margin({ 10, 10, 0, 25 });
     addRemapKey.Click([&](winrt::Windows::Foundation::IInspectable const& sender, RoutedEventArgs const&) {
         SingleKeyRemapControl::AddNewControlKeyRemapRow(keyRemapTable, keyboardRemapControlObjects);
+
+        // Whenever a remap is added move to the bottom of the screen
+        scrollViewer.ChangeView(nullptr, scrollViewer.ScrollableHeight(), nullptr);
+
+        // Set focus to the first Type Button in the newly added row
+        UIHelpers::SetFocusOnTypeButtonInLastRow(keyRemapTable, KeyboardManagerConstants::RemapTableColCount);
     });
 
+    // Set accessible name for the addRemapKey button
+    addRemapKey.SetValue(Automation::AutomationProperties::NameProperty(), box_value(GET_RESOURCE_STRING(IDS_ADD_KEY_REMAP_BUTTON)));
+
+    // Add tooltip for add button which would appear on hover
+    ToolTip addRemapKeytoolTip;
+    addRemapKeytoolTip.Content(box_value(GET_RESOURCE_STRING(IDS_ADD_KEY_REMAP_BUTTON)));
+    ToolTipService::SetToolTip(addRemapKey, addRemapKeytoolTip);
+
+    // Header and example text at the top of the window
+    StackPanel helperText;
+    helperText.Children().Append(keyRemapInfoHeader);
+    helperText.Children().Append(keyRemapInfoExample);
+
+    // Remapping table
     StackPanel mappingsPanel;
-    mappingsPanel.Children().Append(keyRemapInfoHeader);
-    mappingsPanel.Children().Append(keyRemapInfoExample);
     mappingsPanel.Children().Append(keyRemapTable);
     mappingsPanel.Children().Append(addRemapKey);
 
-    ScrollViewer scrollViewer;
+    // Remapping table should be scrollable
     scrollViewer.Content(mappingsPanel);
 
     // Creating the Xaml content. xamlContainer is the parent UI element
     RelativePanel xamlContainer;
-    xamlContainer.SetBelow(scrollViewer, header);
+    xamlContainer.SetBelow(helperText, header);
+    xamlContainer.SetBelow(scrollViewer, helperText);
     xamlContainer.SetAlignLeftWithPanel(header, true);
     xamlContainer.SetAlignRightWithPanel(header, true);
+    xamlContainer.SetAlignLeftWithPanel(helperText, true);
+    xamlContainer.SetAlignRightWithPanel(helperText, true);
     xamlContainer.SetAlignLeftWithPanel(scrollViewer, true);
     xamlContainer.SetAlignRightWithPanel(scrollViewer, true);
     xamlContainer.Children().Append(header);
+    xamlContainer.Children().Append(helperText);
     xamlContainer.Children().Append(scrollViewer);
     xamlContainer.UpdateLayout();
 
@@ -365,6 +366,7 @@ void createEditKeyboardWindow(HINSTANCE hInst, KeyboardManagerState& keyboardMan
     hwndLock.lock();
     hwndEditKeyboardNativeWindow = nullptr;
     keyboardManagerState.ResetUIState();
+    keyboardManagerState.ClearRegisteredKeyDelays();
 
     // Cannot be done in WM_DESTROY because that causes crashes due to fatal app exit
     xamlBridge.ClearXamlIslands();
@@ -378,9 +380,22 @@ LRESULT CALLBACK EditKeyboardWindowProc(HWND hWnd, UINT messageCode, WPARAM wPar
     // Resize the XAML window whenever the parent window is painted or resized
     case WM_PAINT:
     case WM_SIZE:
+    {
         GetClientRect(hWnd, &rcClient);
         SetWindowPos(hWndXamlIslandEditKeyboardWindow, 0, rcClient.left, rcClient.top, rcClient.right, rcClient.bottom, SWP_SHOWWINDOW);
-        break;
+    }
+    break;
+    // To avoid UI elements overlapping on making the window smaller enforce a minimum window size
+    case WM_GETMINMAXINFO:
+    {
+        LPMINMAXINFO lpMMI = (LPMINMAXINFO)lParam;
+        int minWidth = KeyboardManagerConstants::MinimumEditKeyboardWindowWidth;
+        int minHeight = KeyboardManagerConstants::MinimumEditKeyboardWindowHeight;
+        DPIAware::Convert(nullptr, minWidth, minHeight);
+        lpMMI->ptMinTrackSize.x = minWidth;
+        lpMMI->ptMinTrackSize.y = minHeight;
+    }
+    break;
     default:
         // If the Xaml Bridge object exists, then use it's message handler to handle keyboard focus operations
         if (xamlBridgePtr != nullptr)
@@ -417,4 +432,14 @@ bool CheckEditKeyboardWindowActive()
     }
 
     return result;
+}
+
+// Function to close any active Edit Keyboard window
+void CloseActiveEditKeyboardWindow()
+{
+    std::unique_lock<std::mutex> hwndLock(editKeyboardWindowMutex);
+    if (hwndEditKeyboardNativeWindow != nullptr)
+    {
+        PostMessage(hwndEditKeyboardNativeWindow, WM_CLOSE, 0, 0);
+    }
 }

@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "powertoy_module.h"
+#include "centralized_kb_hook.h"
 
 std::map<std::wstring, PowertoyModule>& modules()
 {
@@ -7,9 +8,9 @@ std::map<std::wstring, PowertoyModule>& modules()
     return modules;
 }
 
-PowertoyModule load_powertoy(const std::wstring& filename)
+PowertoyModule load_powertoy(const std::wstring_view filename)
 {
-    auto handle = winrt::check_pointer(LoadLibraryW(filename.c_str()));
+    auto handle = winrt::check_pointer(LoadLibraryW(filename.data()));
     auto create = reinterpret_cast<powertoy_create_func>(GetProcAddress(handle, "powertoy_create"));
     if (!create)
     {
@@ -20,9 +21,8 @@ PowertoyModule load_powertoy(const std::wstring& filename)
     if (!module)
     {
         FreeLibrary(handle);
-        winrt::throw_last_error();
+        winrt::throw_hresult(winrt::hresult(E_POINTER));
     }
-    module->register_system_menu_helper(&SystemMenuHelperInstace());
     return PowertoyModule(module, handle);
 }
 
@@ -43,16 +43,24 @@ PowertoyModule::PowertoyModule(PowertoyModuleIface* module, HMODULE handle) :
     {
         throw std::runtime_error("Module not initialized");
     }
-    auto want_signals = module->get_events();
-    if (want_signals)
+
+    update_hotkeys();
+}
+
+void PowertoyModule::update_hotkeys()
+{
+    CentralizedKeyboardHook::ClearModuleHotkeys(module->get_key());
+
+    size_t hotkeyCount = module->get_hotkeys(nullptr, 0);
+    std::vector<PowertoyModuleIface::Hotkey> hotkeys(hotkeyCount);
+    module->get_hotkeys(hotkeys.data(), hotkeyCount);
+
+    auto modulePtr = module.get();
+
+    for (size_t i = 0; i < hotkeyCount; i++)
     {
-        for (; *want_signals; ++want_signals)
-        {
-            powertoys_events().register_receiver(*want_signals, module);
-        }
-    }
-    if (SystemMenuHelperInstace().HasCustomConfig(module))
-    {
-        powertoys_events().register_system_menu_action(module);
+        CentralizedKeyboardHook::SetHotkeyAction(module->get_key(), hotkeys[i], [modulePtr, i] {
+            return modulePtr->on_hotkey(i);
+        });
     }
 }

@@ -1,14 +1,16 @@
-﻿using System;
+﻿// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
+using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
 using Wox.Infrastructure;
-using Wox.Infrastructure.Exception;
-using Wox.Infrastructure.Logger;
 using Wox.Infrastructure.UserSettings;
 using Wox.Plugin;
+using Wox.Plugin.Logger;
 
 namespace Wox.Core.Plugin
 {
@@ -16,24 +18,22 @@ namespace Wox.Core.Plugin
     {
         public const string PATH = "PATH";
 
-        public static List<PluginPair> Plugins(List<PluginMetadata> metadatas, PluginsSettings settings)
+        public static List<PluginPair> Plugins(List<PluginMetadata> metadatas)
         {
             var csharpPlugins = CSharpPlugins(metadatas).ToList();
-            var executablePlugins = ExecutablePlugins(metadatas);
-            var plugins = csharpPlugins.Concat(executablePlugins).ToList();
-            return plugins;
+            return csharpPlugins;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Suppressing this to enable FxCop. We are logging the exception, and going forward general exceptions should not be caught")]
         public static IEnumerable<PluginPair> CSharpPlugins(List<PluginMetadata> source)
         {
             var plugins = new List<PluginPair>();
-            var metadatas = source.Where(o => o.Language.ToUpper() == AllowedLanguage.CSharp);
+            var metadatas = source.Where(o => o.Language.ToUpperInvariant() == AllowedLanguage.CSharp);
 
             foreach (var metadata in metadatas)
             {
                 var milliseconds = Stopwatch.Debug($"|PluginsLoader.CSharpPlugins|Constructor init cost for {metadata.Name}", () =>
                 {
-
 #if DEBUG
                     var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(metadata.ExecuteFilePath);
                     var types = assembly.GetTypes();
@@ -47,9 +47,10 @@ namespace Wox.Core.Plugin
                     }
                     catch (Exception e)
                     {
-                        Log.Exception($"|PluginsLoader.CSharpPlugins|Couldn't load assembly for {metadata.Name}", e);
+                        Log.Exception($"Couldn't load assembly for {metadata.Name}", e, MethodBase.GetCurrentMethod().DeclaringType);
                         return;
                     }
+
                     var types = assembly.GetTypes();
                     Type type;
                     try
@@ -58,9 +59,10 @@ namespace Wox.Core.Plugin
                     }
                     catch (InvalidOperationException e)
                     {
-                        Log.Exception($"|PluginsLoader.CSharpPlugins|Can't find class implement IPlugin for <{metadata.Name}>", e);
+                        Log.Exception($"Can't find class implement IPlugin for <{metadata.Name}>", e, MethodBase.GetCurrentMethod().DeclaringType);
                         return;
                     }
+
                     IPlugin plugin;
                     try
                     {
@@ -68,34 +70,21 @@ namespace Wox.Core.Plugin
                     }
                     catch (Exception e)
                     {
-                        Log.Exception($"|PluginsLoader.CSharpPlugins|Can't create instance for <{metadata.Name}>", e);
+                        Log.Exception($"Can't create instance for <{metadata.Name}>", e, MethodBase.GetCurrentMethod().DeclaringType);
                         return;
                     }
 #endif
                     PluginPair pair = new PluginPair
                     {
                         Plugin = plugin,
-                        Metadata = metadata
+                        Metadata = metadata,
                     };
                     plugins.Add(pair);
                 });
                 metadata.InitTime += milliseconds;
-
             }
+
             return plugins;
         }
-
-        public static IEnumerable<PluginPair> ExecutablePlugins(IEnumerable<PluginMetadata> source)
-        {
-            var metadatas = source.Where(o => o.Language.ToUpper() == AllowedLanguage.Executable);
-
-            var plugins = metadatas.Select(metadata => new PluginPair
-            {
-                Plugin = new ExecutablePlugin(metadata.ExecuteFilePath),
-                Metadata = metadata
-            });
-            return plugins;
-        }
-
     }
 }

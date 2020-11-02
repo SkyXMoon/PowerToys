@@ -1,5 +1,27 @@
 #include "pch.h"
 #include "Shortcut.h"
+#include "../common/keyboard_layout.h"
+#include "../common/shared_constants.h"
+#include "Helpers.h"
+#include "InputInterface.h"
+
+// Constructor to initialize Shortcut from it's virtual key code string representation.
+Shortcut::Shortcut(const std::wstring& shortcutVK) :
+    winKey(ModifierKey::Disabled), ctrlKey(ModifierKey::Disabled), altKey(ModifierKey::Disabled), shiftKey(ModifierKey::Disabled), actionKey(NULL)
+{
+    auto keys = KeyboardManagerHelper::splitwstring(shortcutVK, ';');
+    for (auto it : keys)
+    {
+        auto vkKeyCode = std::stoul(it);
+        SetKey(vkKeyCode);
+    }
+}
+
+// Constructor to initialize shortcut from a list of keys
+Shortcut::Shortcut(const std::vector<int32_t>& keys)
+{
+    SetKeyCodes(keys);
+}
 
 // Function to return the number of keys in the shortcut
 int Shortcut::Size() const
@@ -99,7 +121,7 @@ DWORD Shortcut::GetWinKey(const ModifierKey& input) const
             //return VK_LWIN by default
             return VK_LWIN;
         }
-        else if (input == ModifierKey::Both)
+        else
         {
             return CommonSharedConstants::VK_WIN_BOTH;
         }
@@ -260,7 +282,7 @@ bool Shortcut::CheckShiftKey(const DWORD& input) const
 // Function to set a key in the shortcut based on the passed key code argument. Returns false if it is already set to the same value. This can be used to avoid UI refreshing
 bool Shortcut::SetKey(const DWORD& input)
 {
-    // Since there isn't a key for a common Win key this is handled with a separate argument
+    // Since there isn't a key for a common Win key we use the key code defined by us
     if (input == CommonSharedConstants::VK_WIN_BOTH)
     {
         if (winKey == ModifierKey::Both)
@@ -483,37 +505,40 @@ std::vector<DWORD> Shortcut::GetKeyCodes()
 }
 
 // Function to set a shortcut from a vector of key codes
-void Shortcut::SetKeyCodes(const std::vector<DWORD>& keys)
+void Shortcut::SetKeyCodes(const std::vector<int32_t>& keys)
 {
     Reset();
     for (int i = 0; i < keys.size(); i++)
     {
-        SetKey(keys[i]);
+        if (keys[i] != -1 && keys[i] != 0)
+        {
+            SetKey(keys[i]);
+        }
     }
 }
 
 // Function to check if all the modifiers in the shortcut have been pressed down
-bool Shortcut::CheckModifiersKeyboardState() const
+bool Shortcut::CheckModifiersKeyboardState(InputInterface& ii) const
 {
     // Check the win key state
     if (winKey == ModifierKey::Both)
     {
         // Since VK_WIN does not exist, we check both VK_LWIN and VK_RWIN
-        if ((!(GetAsyncKeyState(VK_LWIN) & 0x8000)) && (!(GetAsyncKeyState(VK_RWIN) & 0x8000)))
+        if ((!(ii.GetVirtualKeyState(VK_LWIN))) && (!(ii.GetVirtualKeyState(VK_RWIN))))
         {
             return false;
         }
     }
     else if (winKey == ModifierKey::Left)
     {
-        if (!(GetAsyncKeyState(VK_LWIN) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_LWIN)))
         {
             return false;
         }
     }
     else if (winKey == ModifierKey::Right)
     {
-        if (!(GetAsyncKeyState(VK_RWIN) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_RWIN)))
         {
             return false;
         }
@@ -522,21 +547,21 @@ bool Shortcut::CheckModifiersKeyboardState() const
     // Check the ctrl key state
     if (ctrlKey == ModifierKey::Left)
     {
-        if (!(GetAsyncKeyState(VK_LCONTROL) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_LCONTROL)))
         {
             return false;
         }
     }
     else if (ctrlKey == ModifierKey::Right)
     {
-        if (!(GetAsyncKeyState(VK_RCONTROL) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_RCONTROL)))
         {
             return false;
         }
     }
     else if (ctrlKey == ModifierKey::Both)
     {
-        if (!(GetAsyncKeyState(VK_CONTROL) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_CONTROL)))
         {
             return false;
         }
@@ -545,21 +570,21 @@ bool Shortcut::CheckModifiersKeyboardState() const
     // Check the alt key state
     if (altKey == ModifierKey::Left)
     {
-        if (!(GetAsyncKeyState(VK_LMENU) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_LMENU)))
         {
             return false;
         }
     }
     else if (altKey == ModifierKey::Right)
     {
-        if (!(GetAsyncKeyState(VK_RMENU) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_RMENU)))
         {
             return false;
         }
     }
     else if (altKey == ModifierKey::Both)
     {
-        if (!(GetAsyncKeyState(VK_MENU) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_MENU)))
         {
             return false;
         }
@@ -568,21 +593,21 @@ bool Shortcut::CheckModifiersKeyboardState() const
     // Check the shift key state
     if (shiftKey == ModifierKey::Left)
     {
-        if (!(GetAsyncKeyState(VK_LSHIFT) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_LSHIFT)))
         {
             return false;
         }
     }
     else if (shiftKey == ModifierKey::Right)
     {
-        if (!(GetAsyncKeyState(VK_RSHIFT) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_RSHIFT)))
         {
             return false;
         }
     }
     else if (shiftKey == ModifierKey::Both)
     {
-        if (!(GetAsyncKeyState(VK_SHIFT) & 0x8000))
+        if (!(ii.GetVirtualKeyState(VK_SHIFT)))
         {
             return false;
         }
@@ -591,19 +616,71 @@ bool Shortcut::CheckModifiersKeyboardState() const
     return true;
 }
 
+// Helper method for checking if a key is in a range for cleaner code
+bool in_range(DWORD key, DWORD a, DWORD b)
+{
+    return (key >= a && key <= b);
+}
+
+// Helper method for checking if a key is equal to a value for cleaner code
+bool equals(DWORD key, DWORD a)
+{
+    return (key == a);
+}
+
+// Function to check if the key code is to be ignored
+bool IgnoreKeyCode(DWORD key)
+{
+    // Ignore mouse buttons. Keeping this could cause a remapping to fail if a mouse button is also pressed at the same time
+    switch (key)
+    {
+    case VK_LBUTTON:
+    case VK_RBUTTON:
+    case VK_MBUTTON:
+    case VK_XBUTTON1:
+    case VK_XBUTTON2:
+        return true;
+    }
+
+    // As per docs: https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes
+    // Undefined keys
+    bool isUndefined = equals(key, 0x07) || in_range(key, 0x0E, 0x0F) || in_range(key, 0x3A, 0x40);
+
+    // Reserved keys
+    bool isReserved = in_range(key, 0x0A, 0x0B) || equals(key, 0x5E) || in_range(key, 0xB8, 0xB9) || in_range(key, 0xC1, 0xD7) || equals(key, 0xE0) || equals(key, VK_NONAME);
+
+    // Unassigned keys
+    bool isUnassigned = in_range(key, 0x88, 0x8F) || in_range(key, 0x97, 0x9F) || in_range(key, 0xD8, 0xDA) || equals(key, 0xE8);
+
+    // OEM Specific keys. Ignore these key codes as some of them are used by IME keyboards. More information at https://github.com/microsoft/PowerToys/issues/5225
+    bool isOEMSpecific = in_range(key, 0x92, 0x96) || equals(key, 0xE1) || in_range(key, 0xE3, 0xE4) || equals(key, 0xE6) || in_range(key, 0xE9, 0xF5);
+
+    // IME keys. Ignore these key codes as some of them are used by IME keyboards. More information at https://github.com/microsoft/PowerToys/issues/6951
+    bool isIME = in_range(key, VK_KANA, 0x1A) || in_range(key, VK_CONVERT, VK_MODECHANGE) || equals(key, VK_PROCESSKEY);
+
+    if (isUndefined || isReserved || isUnassigned || isOEMSpecific || isIME)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+
 // Function to check if any keys are pressed down except those in the shortcut
-bool Shortcut::IsKeyboardStateClearExceptShortcut() const
+bool Shortcut::IsKeyboardStateClearExceptShortcut(InputInterface& ii) const
 {
     // Iterate through all the virtual key codes - 0xFF is set to key down because of the Num Lock
     for (int keyVal = 1; keyVal < 0xFF; keyVal++)
     {
-        // Skip mouse buttons. Keeping this could cause a remapping to fail if a mouse button is also pressed at the same time
-        if (keyVal == VK_LBUTTON || keyVal == VK_RBUTTON || keyVal == VK_MBUTTON || keyVal == VK_XBUTTON1 || keyVal == VK_XBUTTON2)
+        // Ignore problematic key codes
+        if (IgnoreKeyCode(keyVal))
         {
             continue;
         }
         // Check state of the key. If the key is pressed down but it is not part of the shortcut then the keyboard state is not clear
-        if (GetAsyncKeyState(keyVal) & 0x8000)
+        if (ii.GetVirtualKeyState(keyVal))
         {
             // If one of the win keys is pressed check if it is part of the shortcut
             if (keyVal == VK_LWIN)
@@ -778,16 +855,16 @@ KeyboardManagerHelper::ErrorType Shortcut::DoKeysOverlap(const Shortcut& first, 
         // action keys match
         else if (first.actionKey == second.actionKey)
         {
-            // corresponding modifiers are either both disabled or both not disabled - this ensures that both match in types of modifers i.e. Ctrl(l/r/c) Shift (l/r/c) A matches Ctrl(l/r/c) Shift (l/r/c) A
-            if (((first.winKey != ModifierKey::Disabled && second.winKey != ModifierKey::Disabled) || (first.winKey == ModifierKey::Disabled && second.winKey == ModifierKey::Disabled)) && 
-                ((first.ctrlKey != ModifierKey::Disabled && second.ctrlKey != ModifierKey::Disabled) || (first.ctrlKey == ModifierKey::Disabled && second.ctrlKey == ModifierKey::Disabled)) && 
-                ((first.altKey != ModifierKey::Disabled && second.altKey != ModifierKey::Disabled) || (first.altKey == ModifierKey::Disabled && second.altKey == ModifierKey::Disabled)) && 
+            // corresponding modifiers are either both disabled or both not disabled - this ensures that both match in types of modifiers i.e. Ctrl(l/r/c) Shift (l/r/c) A matches Ctrl(l/r/c) Shift (l/r/c) A
+            if (((first.winKey != ModifierKey::Disabled && second.winKey != ModifierKey::Disabled) || (first.winKey == ModifierKey::Disabled && second.winKey == ModifierKey::Disabled)) &&
+                ((first.ctrlKey != ModifierKey::Disabled && second.ctrlKey != ModifierKey::Disabled) || (first.ctrlKey == ModifierKey::Disabled && second.ctrlKey == ModifierKey::Disabled)) &&
+                ((first.altKey != ModifierKey::Disabled && second.altKey != ModifierKey::Disabled) || (first.altKey == ModifierKey::Disabled && second.altKey == ModifierKey::Disabled)) &&
                 ((first.shiftKey != ModifierKey::Disabled && second.shiftKey != ModifierKey::Disabled) || (first.shiftKey == ModifierKey::Disabled && second.shiftKey == ModifierKey::Disabled)))
             {
                 // If one of the modifier is common
-                if ((first.winKey == ModifierKey::Both || second.winKey == ModifierKey::Both) || 
-                    (first.ctrlKey == ModifierKey::Both || second.ctrlKey == ModifierKey::Both) || 
-                    (first.altKey == ModifierKey::Both || second.altKey == ModifierKey::Both) || 
+                if ((first.winKey == ModifierKey::Both || second.winKey == ModifierKey::Both) ||
+                    (first.ctrlKey == ModifierKey::Both || second.ctrlKey == ModifierKey::Both) ||
+                    (first.altKey == ModifierKey::Both || second.altKey == ModifierKey::Both) ||
                     (first.shiftKey == ModifierKey::Both || second.shiftKey == ModifierKey::Both))
                 {
                     return KeyboardManagerHelper::ErrorType::ConflictingModifierShortcut;

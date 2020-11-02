@@ -1,10 +1,8 @@
 #include "pch.h"
 #include <interface/powertoy_module_interface.h>
-#include <interface/lowlevel_keyboard_event_data.h>
-#include <interface/win_hook_event_data.h>
 #include <common/settings_objects.h>
 #include <common/shared_constants.h>
-#include "resource.h"
+#include "Generated Files/resource.h"
 #include <keyboardmanager/ui/EditKeyboardWindow.h>
 #include <keyboardmanager/ui/EditShortcutsWindow.h>
 #include <keyboardmanager/common/KeyboardManagerState.h>
@@ -12,7 +10,11 @@
 #include <keyboardmanager/common/RemapShortcut.h>
 #include <keyboardmanager/common/KeyboardManagerConstants.h>
 #include <common/settings_helpers.h>
+#include <common/debug_control.h>
 #include <keyboardmanager/common/trace.h>
+#include <keyboardmanager/common/Helpers.h>
+#include "KeyboardEventHandlers.h"
+#include "Input.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -43,12 +45,8 @@ private:
     // The PowerToy name that will be shown in the settings.
     const std::wstring app_name = GET_RESOURCE_STRING(IDS_KEYBOARDMANAGER);
 
-    // Flags used for distinguishing key events sent by Keyboard Manager
-    static const ULONG_PTR KEYBOARDMANAGER_SINGLEKEY_FLAG = 0x11;
-    static const ULONG_PTR KEYBOARDMANAGER_SHORTCUT_FLAG = 0x101;
-
-    // Dummy key event used in between key up and down events to prevent certain global events from happening
-    static const DWORD DUMMY_KEY = 0xFF;
+    //contains the non localized key of the powertoy
+    std::wstring app_key = KeyboardManagerConstants::ModuleName;
 
     // Low level hook handles
     static HHOOK hook_handle;
@@ -61,6 +59,9 @@ private:
 
     // Variable which stores all the state information to be shared between the UI and back-end
     KeyboardManagerState keyboardManagerState;
+
+    // Object of class which implements InputInterface. Required for calling library functions while enabling testing
+    Input inputHandler;
 
 public:
     // Constructor
@@ -79,7 +80,7 @@ public:
         try
         {
             PowerToysSettings::PowerToyValues settings =
-                PowerToysSettings::PowerToyValues::load_from_settings_file(get_name());
+                PowerToysSettings::PowerToyValues::load_from_settings_file(get_key());
             auto current_config = settings.get_string_value(KeyboardManagerConstants::ActiveConfigurationSettingName);
 
             if (current_config)
@@ -90,47 +91,128 @@ public:
                 if (configFile)
                 {
                     auto jsonData = *configFile;
-                    auto remapKeysData = jsonData.GetNamedObject(KeyboardManagerConstants::RemapKeysSettingName);
-                    auto remapShortcutsData = jsonData.GetNamedObject(KeyboardManagerConstants::RemapShortcutsSettingName);
-                    keyboardManagerState.ClearSingleKeyRemaps();
 
-                    if (remapKeysData)
+                    // Load single key remaps
+                    try
                     {
-                        auto inProcessRemapKeys = remapKeysData.GetNamedArray(KeyboardManagerConstants::InProcessRemapKeysSettingName);
-                        for (const auto& it : inProcessRemapKeys)
+                        auto remapKeysData = jsonData.GetNamedObject(KeyboardManagerConstants::RemapKeysSettingName);
+                        keyboardManagerState.ClearSingleKeyRemaps();
+
+                        if (remapKeysData)
                         {
-                            try
+                            auto inProcessRemapKeys = remapKeysData.GetNamedArray(KeyboardManagerConstants::InProcessRemapKeysSettingName);
+                            for (const auto& it : inProcessRemapKeys)
                             {
-                                auto originalKey = it.GetObjectW().GetNamedString(KeyboardManagerConstants::OriginalKeysSettingName);
-                                auto newRemapKey = it.GetObjectW().GetNamedString(KeyboardManagerConstants::NewRemapKeysSettingName);
-                                keyboardManagerState.AddSingleKeyRemap(std::stoul(originalKey.c_str()), std::stoul(newRemapKey.c_str()));
-                            }
-                            catch (...)
-                            {
-                                // Improper Key Data JSON. Try the next remap.
+                                try
+                                {
+                                    auto originalKey = it.GetObjectW().GetNamedString(KeyboardManagerConstants::OriginalKeysSettingName);
+                                    auto newRemapKey = it.GetObjectW().GetNamedString(KeyboardManagerConstants::NewRemapKeysSettingName);
+
+                                    // If remapped to a shortcut
+                                    if (std::wstring(newRemapKey).find(L";") != std::string::npos)
+                                    {
+                                        keyboardManagerState.AddSingleKeyRemap(std::stoul(originalKey.c_str()), Shortcut(newRemapKey.c_str()));
+                                    }
+
+                                    // If remapped to a key
+                                    else
+                                    {
+                                        keyboardManagerState.AddSingleKeyRemap(std::stoul(originalKey.c_str()), std::stoul(newRemapKey.c_str()));
+                                    }
+                                }
+                                catch (...)
+                                {
+                                    // Improper Key Data JSON. Try the next remap.
+                                }
                             }
                         }
                     }
-
-                    keyboardManagerState.ClearOSLevelShortcuts();
-                    if (remapShortcutsData)
+                    catch (...)
                     {
-                        auto globalRemapShortcuts = remapShortcutsData.GetNamedArray(KeyboardManagerConstants::GlobalRemapShortcutsSettingName);
-                        for (const auto& it : globalRemapShortcuts)
+                        // Improper JSON format for single key remaps. Skip to next remap type
+                    }
+
+                    // Load shortcut remaps
+                    try
+                    {
+                        auto remapShortcutsData = jsonData.GetNamedObject(KeyboardManagerConstants::RemapShortcutsSettingName);
+                        keyboardManagerState.ClearOSLevelShortcuts();
+                        keyboardManagerState.ClearAppSpecificShortcuts();
+                        if (remapShortcutsData)
                         {
+                            // Load os level shortcut remaps
                             try
                             {
-                                auto originalKeys = it.GetObjectW().GetNamedString(KeyboardManagerConstants::OriginalKeysSettingName);
-                                auto newRemapKeys = it.GetObjectW().GetNamedString(KeyboardManagerConstants::NewRemapKeysSettingName);
-                                Shortcut originalSC(originalKeys.c_str());
-                                Shortcut newRemapSC(newRemapKeys.c_str());
-                                keyboardManagerState.AddOSLevelShortcut(originalSC, newRemapSC);
+                                auto globalRemapShortcuts = remapShortcutsData.GetNamedArray(KeyboardManagerConstants::GlobalRemapShortcutsSettingName);
+                                for (const auto& it : globalRemapShortcuts)
+                                {
+                                    try
+                                    {
+                                        auto originalKeys = it.GetObjectW().GetNamedString(KeyboardManagerConstants::OriginalKeysSettingName);
+                                        auto newRemapKeys = it.GetObjectW().GetNamedString(KeyboardManagerConstants::NewRemapKeysSettingName);
+
+                                        // If remapped to a shortcut
+                                        if (std::wstring(newRemapKeys).find(L";") != std::string::npos)
+                                        {
+                                            keyboardManagerState.AddOSLevelShortcut(Shortcut(originalKeys.c_str()), Shortcut(newRemapKeys.c_str()));
+                                        }
+
+                                        // If remapped to a key
+                                        else
+                                        {
+                                            keyboardManagerState.AddOSLevelShortcut(Shortcut(originalKeys.c_str()), std::stoul(newRemapKeys.c_str()));
+                                        }
+                                    }
+                                    catch (...)
+                                    {
+                                        // Improper Key Data JSON. Try the next shortcut.
+                                    }
+                                }
                             }
                             catch (...)
                             {
-                                // Improper Key Data JSON. Try the next shortcut.
+                                // Improper JSON format for os level shortcut remaps. Skip to next remap type
+                            }
+
+                            // Load app specific shortcut remaps
+                            try
+                            {
+                                auto appSpecificRemapShortcuts = remapShortcutsData.GetNamedArray(KeyboardManagerConstants::AppSpecificRemapShortcutsSettingName);
+                                for (const auto& it : appSpecificRemapShortcuts)
+                                {
+                                    try
+                                    {
+                                        auto originalKeys = it.GetObjectW().GetNamedString(KeyboardManagerConstants::OriginalKeysSettingName);
+                                        auto newRemapKeys = it.GetObjectW().GetNamedString(KeyboardManagerConstants::NewRemapKeysSettingName);
+                                        auto targetApp = it.GetObjectW().GetNamedString(KeyboardManagerConstants::TargetAppSettingName);
+
+                                        // If remapped to a shortcut
+                                        if (std::wstring(newRemapKeys).find(L";") != std::string::npos)
+                                        {
+                                            keyboardManagerState.AddAppSpecificShortcut(targetApp.c_str(), Shortcut(originalKeys.c_str()), Shortcut(newRemapKeys.c_str()));
+                                        }
+
+                                        // If remapped to a key
+                                        else
+                                        {
+                                            keyboardManagerState.AddAppSpecificShortcut(targetApp.c_str(), Shortcut(originalKeys.c_str()), std::stoul(newRemapKeys.c_str()));
+                                        }
+                                    }
+                                    catch (...)
+                                    {
+                                        // Improper Key Data JSON. Try the next shortcut.
+                                    }
+                                }
+                            }
+                            catch (...)
+                            {
+                                // Improper JSON format for os level shortcut remaps. Skip to next remap type
                             }
                         }
+                    }
+                    catch (...)
+                    {
+                        // Improper JSON format for shortcut remaps. Skip to next remap type
                     }
                 }
             }
@@ -141,41 +223,6 @@ public:
         }
     }
 
-    // This function is used to add the hardcoded mappings
-    void init_map()
-    {
-        //// If mapped to 0x0 then key is disabled.
-        //keyboardManagerState.singleKeyReMap[0x41] = 0x42;
-        //keyboardManagerState.singleKeyReMap[0x42] = 0x43;
-        //keyboardManagerState.singleKeyReMap[0x43] = 0x41;
-        //keyboardManagerState.singleKeyReMap[VK_LWIN] = VK_LCONTROL;
-        //keyboardManagerState.singleKeyReMap[VK_LCONTROL] = VK_RWIN;
-        //keyboardManagerState.singleKeyReMap[VK_CAPITAL] = 0x0;
-        //keyboardManagerState.singleKeyReMap[VK_LSHIFT] = VK_CAPITAL;
-        //keyboardManagerState.singleKeyToggleToMod[VK_CAPITAL] = false;
-
-        //// OS-level shortcut remappings
-        //Shortcut newShortcut = Shortcut::CreateShortcut(winrt::to_hstring(L"Win 65"));
-        //Shortcut originalShortcut = Shortcut::CreateShortcut(winrt::to_hstring(L"Shift 65"));
-        //keyboardManagerState.AddOSLevelShortcut(originalShortcut, newShortcut);
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LMENU, 0x44 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x56 }), false);
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LMENU, 0x45 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x58 }), false);
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LWIN, 0x46 })] = std::make_pair(std::vector<WORD>({ VK_LWIN, 0x53 }), false);
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LWIN, 0x41 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x58 }), false);
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LCONTROL, 0x58 })] = std::make_pair(std::vector<WORD>({ VK_LWIN, 0x41 }), false);
-
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LWIN, 0x41 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x58 }), false);
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LCONTROL, 0x58 })] = std::make_pair(std::vector<WORD>({ VK_LMENU, 0x44 }), false);
-        //keyboardManagerState.osLevelShortcutReMap[std::vector<DWORD>({ VK_LCONTROL, 0x56 })] = std::make_pair(std::vector<WORD>({ VK_LWIN, 0x41 }), false);
-
-        ////App-specific shortcut remappings
-        //keyboardManagerState.appSpecificShortcutReMap[L"msedge.exe"][std::vector<DWORD>({ VK_LCONTROL, 0x43 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x56 }), false); // Ctrl+C to Ctrl+V
-        //keyboardManagerState.appSpecificShortcutReMap[L"msedge.exe"][std::vector<DWORD>({ VK_LMENU, 0x44 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x46 }), false); // Alt+D to Ctrl+F
-        //keyboardManagerState.appSpecificShortcutReMap[L"OUTLOOK.EXE"][std::vector<DWORD>({ VK_LCONTROL, 0x46 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x45 }), false); // Ctrl+F to Ctrl+E
-        //keyboardManagerState.appSpecificShortcutReMap[L"MicrosoftEdge.exe"][std::vector<DWORD>({ VK_LCONTROL, 0x58 })] = std::make_pair(std::vector<WORD>({ VK_LCONTROL, 0x56 }), false); // Ctrl+X to Ctrl+V
-        //keyboardManagerState.appSpecificShortcutReMap[L"Calculator.exe"][std::vector<DWORD>({ VK_LCONTROL, 0x47 })] = std::make_pair(std::vector<WORD>({ VK_LSHIFT, 0x32 }), false); // Ctrl+G to Shift+2
-    }
-
     // Destroy the powertoy and free memory
     virtual void destroy() override
     {
@@ -183,20 +230,16 @@ public:
         delete this;
     }
 
-    // Return the display name of the powertoy, this will be cached by the runner
+    // Return the localized display name of the powertoy
     virtual const wchar_t* get_name() override
     {
         return app_name.c_str();
     }
 
-    // Return array of the names of all events that this powertoy listens for, with
-    // nullptr as the last element of the array. Nullptr can also be retured for empty
-    // list.
-    virtual const wchar_t** get_events() override
+    // Return the non localized key of the powertoy, this will be cached by the runner
+    virtual const wchar_t* get_key() override
     {
-        static const wchar_t* events[] = { ll_keyboard, nullptr };
-
-        return events;
+        return app_key.c_str();
     }
 
     // Return JSON with the configuration options.
@@ -207,6 +250,7 @@ public:
         // Create a Settings object.
         PowerToysSettings::Settings settings(hinstance, get_name());
         settings.set_description(IDS_SETTINGS_DESCRIPTION);
+        settings.set_overview_link(L"https://aka.ms/PowerToysOverview_KeyboardManager");
 
         return settings.serialize_to_buffer(buffer, buffer_size);
     }
@@ -251,7 +295,7 @@ public:
         {
             // Parse the input JSON string.
             PowerToysSettings::PowerToyValues values =
-                PowerToysSettings::PowerToyValues::from_json_string(config);
+                PowerToysSettings::PowerToyValues::from_json_string(config, get_key());
 
             // If you don't need to do any custom processing of the settings, proceed
             // to persists the values calling:
@@ -279,6 +323,9 @@ public:
         m_enabled = false;
         // Log telemetry
         Trace::EnableKeyboardManager(false);
+        // Close active windows
+        CloseActiveEditKeyboardWindow();
+        CloseActiveEditShortcutsWindow();
         // Stop keyboard hook
         stop_lowlevel_keyboard_hook();
     }
@@ -288,16 +335,6 @@ public:
     {
         return m_enabled;
     }
-
-    // Handle incoming event, data is event-specific
-    virtual intptr_t signal_event(const wchar_t* name, intptr_t data) override
-    {
-        return 0;
-    }
-
-    virtual void register_system_menu_helper(PowertoySystemMenuIface* helper) override {}
-
-    virtual void signal_system_menu_action(const wchar_t* name) override {}
 
     // Hook procedure definition
     static LRESULT CALLBACK hook_proc(int nCode, WPARAM wParam, LPARAM lParam)
@@ -309,17 +346,20 @@ public:
             event.wParam = wParam;
             if (keyboardmanager_object_ptr->HandleKeyboardHookEvent(&event) == 1)
             {
+                // Reset Num Lock whenever a NumLock key down event is suppressed since Num Lock key state change occurs before it is intercepted by low level hooks
+                if (event.lParam->vkCode == VK_NUMLOCK && (event.wParam == WM_KEYDOWN || event.wParam == WM_SYSKEYDOWN) && event.lParam->dwExtraInfo != KeyboardManagerConstants::KEYBOARDMANAGER_SUPPRESS_FLAG)
+                {
+                    KeyboardEventHandlers::SetNumLockToPreviousState(keyboardmanager_object_ptr->inputHandler);
+                }
                 return 1;
             }
         }
         return CallNextHookEx(hook_handle_copy, nCode, wParam, lParam);
     }
 
-    // Prevent system-wide input lagging while paused in the debugger
-    //#define DISABLE_LOWLEVEL_KBHOOK_WHEN_DEBUGGED
     void start_lowlevel_keyboard_hook()
     {
-#if defined(_DEBUG) && defined(DISABLE_LOWLEVEL_KBHOOK_WHEN_DEBUGGED)
+#if defined(DISABLE_LOWLEVEL_HOOKS_WHEN_DEBUGGED)
         if (IsDebuggerPresent())
         {
             return;
@@ -332,7 +372,10 @@ public:
             hook_handle_copy = hook_handle;
             if (!hook_handle)
             {
-                throw std::runtime_error("Cannot install keyboard listener");
+                DWORD errorCode = GetLastError();
+                show_last_error_message(L"SetWindowsHookEx", errorCode, L"PowerToys - Keyboard Manager");
+                auto errorMessage = get_last_error_message(errorCode);
+                Trace::Error(errorCode, errorMessage.has_value() ? errorMessage.value() : L"", L"start_lowlevel_keyboard_hook.SetWindowsHookEx");
             }
         }
     }
@@ -350,6 +393,18 @@ public:
     // Function called by the hook procedure to handle the events. This is the starting point function for remapping
     intptr_t HandleKeyboardHookEvent(LowlevelKeyboardEvent* data) noexcept
     {
+        // If remappings are disabled (due to the remap tables getting updated) skip the rest of the hook
+        if (!keyboardManagerState.AreRemappingsEnabled())
+        {
+            return 0;
+        }
+
+        // If key has suppress flag, then suppress it
+        if (data->lParam->dwExtraInfo == KeyboardManagerConstants::KEYBOARDMANAGER_SUPPRESS_FLAG)
+        {
+            return 1;
+        }
+
         // If the Detect Key Window is currently activated, then suppress the keyboard event
         KeyboardManagerHelper::KeyboardHookDecision singleKeyRemapUIDetected = keyboardManagerState.DetectSingleRemapKeyUIBackend(data);
         if (singleKeyRemapUIDetected == KeyboardManagerHelper::KeyboardHookDecision::Suppress)
@@ -361,8 +416,19 @@ public:
             return 0;
         }
 
+        // If the Detect Shortcut Window from Remap Keys is currently activated, then suppress the keyboard event
+        KeyboardManagerHelper::KeyboardHookDecision remapKeyShortcutUIDetected = keyboardManagerState.DetectShortcutUIBackend(data, true);
+        if (remapKeyShortcutUIDetected == KeyboardManagerHelper::KeyboardHookDecision::Suppress)
+        {
+            return 1;
+        }
+        else if (remapKeyShortcutUIDetected == KeyboardManagerHelper::KeyboardHookDecision::SkipHook)
+        {
+            return 0;
+        }
+
         // Remap a key
-        intptr_t SingleKeyRemapResult = HandleSingleKeyRemapEvent(data);
+        intptr_t SingleKeyRemapResult = KeyboardEventHandlers::HandleSingleKeyRemapEvent(inputHandler, data, keyboardManagerState);
 
         // Single key remaps have priority. If a key is remapped, only the remapped version should be visible to the shortcuts and hence the event should be suppressed here.
         if (SingleKeyRemapResult == 1)
@@ -371,7 +437,7 @@ public:
         }
 
         // If the Detect Shortcut Window is currently activated, then suppress the keyboard event
-        KeyboardManagerHelper::KeyboardHookDecision shortcutUIDetected = keyboardManagerState.DetectShortcutUIBackend(data);
+        KeyboardManagerHelper::KeyboardHookDecision shortcutUIDetected = keyboardManagerState.DetectShortcutUIBackend(data, false);
         if (shortcutUIDetected == KeyboardManagerHelper::KeyboardHookDecision::Suppress)
         {
             return 1;
@@ -381,571 +447,23 @@ public:
             return 0;
         }
 
+        /* This feature has not been enabled (code from proof of concept stage)
+        * 
         //// Remap a key to behave like a modifier instead of a toggle
-        //intptr_t SingleKeyToggleToModResult = HandleSingleKeyToggleToModEvent(data);
+        //intptr_t SingleKeyToggleToModResult = KeyboardEventHandlers::HandleSingleKeyToggleToModEvent(inputHandler, data, keyboardManagerState);
+        */
 
-        //// Handle an app-specific shortcut remapping
-        //intptr_t AppSpecificShortcutRemapResult = HandleAppSpecificShortcutRemapEvent(data);
+        // Handle an app-specific shortcut remapping
+        intptr_t AppSpecificShortcutRemapResult = KeyboardEventHandlers::HandleAppSpecificShortcutRemapEvent(inputHandler, data, keyboardManagerState);
 
-        //// If an app-specific shortcut is remapped then the os-level shortcut remapping should be suppressed.
-        //if (AppSpecificShortcutRemapResult == 1)
-        //{
-        //    return 1;
-        //}
-
-        // Handle an os-level shortcut remapping
-        intptr_t OSLevelShortcutRemapResult = HandleOSLevelShortcutRemapEvent(data);
-
-        // If any of the supported types of remappings took place, then suppress the key event
-        if ((SingleKeyRemapResult + OSLevelShortcutRemapResult) > 0)
+        // If an app-specific shortcut is remapped then the os-level shortcut remapping should be suppressed.
+        if (AppSpecificShortcutRemapResult == 1)
         {
             return 1;
         }
-        else
-        {
-            return 0;
-        }
-    }
 
-    void SetKeyEvent(LPINPUT keyEventArray, int index, DWORD inputType, WORD keyCode, DWORD flags, ULONG_PTR extraInfo)
-    {
-        keyEventArray[index].type = inputType;
-        keyEventArray[index].ki.wVk = keyCode;
-        keyEventArray[index].ki.dwFlags = flags;
-        if (KeyboardManagerHelper::IsExtendedKey(keyCode))
-        {
-            keyEventArray[index].ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
-        }
-        keyEventArray[index].ki.dwExtraInfo = extraInfo;
-    }
-
-    // Function to a handle a single key remap
-    intptr_t HandleSingleKeyRemapEvent(LowlevelKeyboardEvent* data) noexcept
-    {
-        // Check if the key event was generated by KeyboardManager to avoid remapping events generated by us.
-        if (!(data->lParam->dwExtraInfo & CommonSharedConstants::KEYBOARDMANAGER_INJECTED_FLAG))
-        {
-            // The mutex should be unlocked before SendInput is called to avoid re-entry into the same mutex. More details can be found at https://github.com/microsoft/PowerToys/pull/1789#issuecomment-607555837
-            std::unique_lock<std::mutex> lock(keyboardManagerState.singleKeyReMap_mutex);
-            auto it = keyboardManagerState.singleKeyReMap.find(data->lParam->vkCode);
-            if (it != keyboardManagerState.singleKeyReMap.end())
-            {
-                // If mapped to 0x0 then the key is disabled
-                if (it->second == 0x0)
-                {
-                    return 1;
-                }
-
-                int key_count = 1;
-                LPINPUT keyEventList = new INPUT[size_t(key_count)]();
-                memset(keyEventList, 0, sizeof(keyEventList));
-
-                // Handle remaps to VK_WIN_BOTH
-                DWORD target = it->second;
-                // If a key is remapped to VK_WIN_BOTH, we send VK_LWIN instead
-                if (target == CommonSharedConstants::VK_WIN_BOTH)
-                {
-                    target = VK_LWIN;
-                }
-
-                if (data->wParam == WM_KEYUP || data->wParam == WM_SYSKEYUP)
-                {
-                    SetKeyEvent(keyEventList, 0, INPUT_KEYBOARD, (WORD)target, KEYEVENTF_KEYUP, KEYBOARDMANAGER_SINGLEKEY_FLAG);
-                }
-                else
-                {
-                    SetKeyEvent(keyEventList, 0, INPUT_KEYBOARD, (WORD)target, 0, KEYBOARDMANAGER_SINGLEKEY_FLAG);
-                }
-
-                lock.unlock();
-                UINT res = SendInput(key_count, keyEventList, sizeof(INPUT));
-                delete[] keyEventList;
-                return 1;
-            }
-        }
-
-        return 0;
-    }
-
-    // Function to a change a key's behavior from toggle to modifier
-    intptr_t HandleSingleKeyToggleToModEvent(LowlevelKeyboardEvent* data) noexcept
-    {
-        // Check if the key event was generated by KeyboardManager to avoid remapping events generated by us.
-        if (!(data->lParam->dwExtraInfo & CommonSharedConstants::KEYBOARDMANAGER_INJECTED_FLAG))
-        {
-            // The mutex should be unlocked before SendInput is called to avoid re-entry into the same mutex. More details can be found at https://github.com/microsoft/PowerToys/pull/1789#issuecomment-607555837
-            std::unique_lock<std::mutex> lock(keyboardManagerState.singleKeyToggleToMod_mutex);
-            auto it = keyboardManagerState.singleKeyToggleToMod.find(data->lParam->vkCode);
-            if (it != keyboardManagerState.singleKeyToggleToMod.end())
-            {
-                // To avoid long presses (which leads to continuous keydown messages) from toggling the key on and off
-                if (data->wParam == WM_KEYDOWN || data->wParam == WM_SYSKEYDOWN)
-                {
-                    if (it->second == false)
-                    {
-                        keyboardManagerState.singleKeyToggleToMod[data->lParam->vkCode] = true;
-                    }
-                    else
-                    {
-                        lock.unlock();
-                        return 1;
-                    }
-                }
-                int key_count = 2;
-                LPINPUT keyEventList = new INPUT[size_t(key_count)]();
-                memset(keyEventList, 0, sizeof(keyEventList));
-                SetKeyEvent(keyEventList, 0, INPUT_KEYBOARD, (WORD)data->lParam->vkCode, 0, KEYBOARDMANAGER_SINGLEKEY_FLAG);
-                SetKeyEvent(keyEventList, 1, INPUT_KEYBOARD, (WORD)data->lParam->vkCode, KEYEVENTF_KEYUP, KEYBOARDMANAGER_SINGLEKEY_FLAG);
-
-                lock.unlock();
-                UINT res = SendInput(key_count, keyEventList, sizeof(INPUT));
-                delete[] keyEventList;
-
-                // Reset the long press flag when the key has been lifted.
-                if (data->wParam == WM_KEYUP || data->wParam == WM_SYSKEYUP)
-                {
-                    lock.lock();
-                    keyboardManagerState.singleKeyToggleToMod[data->lParam->vkCode] = false;
-                    lock.unlock();
-                }
-
-                return 1;
-            }
-        }
-
-        return 0;
-    }
-
-    // Function to a handle a shortcut remap
-    intptr_t HandleShortcutRemapEvent(LowlevelKeyboardEvent* data, std::map<Shortcut, RemapShortcut>& reMap, std::mutex& map_mutex) noexcept
-    {
-        // The mutex should be unlocked before SendInput is called to avoid re-entry into the same mutex. More details can be found at https://github.com/microsoft/PowerToys/pull/1789#issuecomment-607555837
-        std::unique_lock<std::mutex> lock(map_mutex);
-        for (auto& it : reMap)
-        {
-            const size_t src_size = it.first.Size();
-            const size_t dest_size = it.second.targetShortcut.Size();
-
-            // If the shortcut has been pressed down
-            if (!it.second.isShortcutInvoked && it.first.CheckModifiersKeyboardState())
-            {
-                if (data->lParam->vkCode == it.first.GetActionKey() && (data->wParam == WM_KEYDOWN || data->wParam == WM_SYSKEYDOWN))
-                {
-                    // Check if any other keys have been pressed apart from the shortcut. If true, then check for the next shortcut
-                    if (!it.first.IsKeyboardStateClearExceptShortcut())
-                    {
-                        continue;
-                    }
-
-                    size_t key_count;
-                    LPINPUT keyEventList;
-
-                    // Remember which win key was pressed initially
-                    if (GetAsyncKeyState(VK_RWIN) & 0x8000)
-                    {
-                        it.second.winKeyInvoked = ModifierKey::Right;
-                    }
-                    else if (GetAsyncKeyState(VK_LWIN) & 0x8000)
-                    {
-                        it.second.winKeyInvoked = ModifierKey::Left;
-                    }
-
-                    // Get the common keys between the two shortcuts
-                    int commonKeys = it.first.GetCommonModifiersCount(it.second.targetShortcut);
-
-                    // If the original shortcut modifiers are a subset of the new shortcut
-                    if (commonKeys == src_size - 1)
-                    {
-                        // key down for all new shortcut keys except the common modifiers
-                        key_count = dest_size - commonKeys;
-                        keyEventList = new INPUT[key_count]();
-                        memset(keyEventList, 0, sizeof(keyEventList));
-                        int i = 0;
-
-                        if ((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) && it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) && it.second.targetShortcut.GetCtrlKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetCtrlKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) && it.second.targetShortcut.GetAltKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetAltKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) && it.second.targetShortcut.GetShiftKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetShiftKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetActionKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-                    else
-                    {
-                        // Dummy key, key up for all the original shortcut modifier keys and key down for all the new shortcut keys but common keys in each are not repeated
-                        key_count = 1 + (src_size - 1) + (dest_size) - (2 * (size_t)commonKeys);
-                        keyEventList = new INPUT[key_count]();
-                        memset(keyEventList, 0, sizeof(keyEventList));
-
-                        // Send dummy key
-                        int i = 0;
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)DUMMY_KEY, KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                        // Release original shortcut state (release in reverse order of shortcut to be accurate)
-                        if ((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) && it.first.GetShiftKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetShiftKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) && it.first.GetAltKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetAltKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) && it.first.GetCtrlKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetCtrlKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) && it.first.GetWinKey(it.second.winKeyInvoked) != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetWinKey(it.second.winKeyInvoked), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-
-                        // Set new shortcut key down state
-                        if ((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) && it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) && it.second.targetShortcut.GetCtrlKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetCtrlKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) && it.second.targetShortcut.GetAltKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetAltKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        if ((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) && it.second.targetShortcut.GetShiftKey() != NULL)
-                        {
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetShiftKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetActionKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-
-                    it.second.isShortcutInvoked = true;
-                    lock.unlock();
-                    UINT res = SendInput((UINT)key_count, keyEventList, sizeof(INPUT));
-                    delete[] keyEventList;
-                    return 1;
-                }
-            }
-            // The shortcut has already been pressed down at least once, i.e. the shortcut has been invoked
-            // There are 4 cases to be handled if the shortcut has been pressed down
-            // 1. The user lets go of one of the modifier keys - reset the keyboard back to the state of the keys actually being pressed down
-            // 2. The user keeps the shortcut pressed - the shortcut is repeated (for example you could hold down Ctrl+V and it will keep pasting)
-            // 3. The user lets go of the action key - reset the keyboard back to the state of the keys actually being pressed down
-            // 4. The user presses another key while holding the shortcut down - the system now sees all the new shortcut keys and this extra key pressed at the end. Not handled as resetting the state would trigger the original shortcut once more
-            else if (it.second.isShortcutInvoked)
-            {
-                // Get the common keys between the two shortcuts
-                int commonKeys = it.first.GetCommonModifiersCount(it.second.targetShortcut);
-
-                // Case 1: If any of the modifier keys of the original shortcut are released before the normal key
-                if ((it.first.CheckWinKey(data->lParam->vkCode) || it.first.CheckCtrlKey(data->lParam->vkCode) || it.first.CheckAltKey(data->lParam->vkCode) || it.first.CheckShiftKey(data->lParam->vkCode)) && (data->wParam == WM_KEYUP || data->wParam == WM_SYSKEYUP))
-                {
-                    // Release new shortcut, and set original shortcut keys except the one released
-                    size_t key_count;
-                    // if the released key is present in both shortcuts' modifiers (i.e part of the common modifiers)
-                    if (it.second.targetShortcut.CheckWinKey(data->lParam->vkCode) || it.second.targetShortcut.CheckCtrlKey(data->lParam->vkCode) || it.second.targetShortcut.CheckAltKey(data->lParam->vkCode) || it.second.targetShortcut.CheckShiftKey(data->lParam->vkCode))
-                    {
-                        // release all new shortcut keys and the common released modifier except the other common modifiers, and add all original shortcut modifiers except the common ones
-                        key_count = (dest_size - commonKeys + 1) + (src_size - 1 - commonKeys);
-                    }
-                    else
-                    {
-                        // release all new shortcut keys except the common modifiers and add all original shortcut modifiers except the common ones
-                        key_count = dest_size + (src_size - 2) - (2 * (size_t)commonKeys);
-                    }
-                    LPINPUT keyEventList = new INPUT[key_count]();
-                    memset(keyEventList, 0, sizeof(keyEventList));
-
-                    // Release new shortcut state (release in reverse order of shortcut to be accurate)
-                    int i = 0;
-                    SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetActionKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                    i++;
-                    if (((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) || (it.second.targetShortcut.CheckShiftKey(data->lParam->vkCode))) && it.second.targetShortcut.GetShiftKey() != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetShiftKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-                    if (((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) || (it.second.targetShortcut.CheckAltKey(data->lParam->vkCode))) && it.second.targetShortcut.GetAltKey() != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetAltKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-                    if (((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) || (it.second.targetShortcut.CheckCtrlKey(data->lParam->vkCode))) && it.second.targetShortcut.GetCtrlKey() != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetCtrlKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-                    if (((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) || (it.second.targetShortcut.CheckWinKey(data->lParam->vkCode))) && it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-
-                    // Set original shortcut key down state except the action key and the released modifier
-                    if ((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) && (!it.first.CheckWinKey(data->lParam->vkCode)) && it.first.GetWinKey(it.second.winKeyInvoked) != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetWinKey(it.second.winKeyInvoked), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-                    if ((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) && (!it.first.CheckCtrlKey(data->lParam->vkCode)) && it.first.GetCtrlKey() != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetCtrlKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-                    if ((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) && (!it.first.CheckAltKey(data->lParam->vkCode)) && it.first.GetAltKey() != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetAltKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-                    if ((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) && (!it.first.CheckShiftKey(data->lParam->vkCode)) && it.first.GetShiftKey() != NULL)
-                    {
-                        SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetShiftKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                        i++;
-                    }
-
-                    it.second.isShortcutInvoked = false;
-                    it.second.winKeyInvoked = ModifierKey::Disabled;
-                    lock.unlock();
-                    UINT res = SendInput((UINT)key_count, keyEventList, sizeof(INPUT));
-                    delete[] keyEventList;
-                    return 1;
-                }
-
-                // The system will see the modifiers of the new shortcut as being held down because of the shortcut remap
-                if (it.second.targetShortcut.CheckModifiersKeyboardState())
-                {
-                    // Case 2: If the original shortcut is still held down the keyboard will get a key down message of the action key in the original shortcut and the new shortcut's modifiers will be held down (keys held down send repeated keydown messages)
-                    if (data->lParam->vkCode == it.first.GetActionKey() && (data->wParam == WM_KEYDOWN || data->wParam == WM_SYSKEYDOWN))
-                    {
-                        size_t key_count = 1;
-                        LPINPUT keyEventList = new INPUT[key_count]();
-                        memset(keyEventList, 0, sizeof(keyEventList));
-                        SetKeyEvent(keyEventList, 0, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetActionKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-
-                        it.second.isShortcutInvoked = true;
-                        lock.unlock();
-                        UINT res = SendInput((UINT)key_count, keyEventList, sizeof(INPUT));
-                        delete[] keyEventList;
-                        return 1;
-                    }
-
-                    // Case 3: If the action key is released from the original shortcut then revert the keyboard state to just the original modifiers being held down
-                    if (data->lParam->vkCode == it.first.GetActionKey() && (data->wParam == WM_KEYUP || data->wParam == WM_SYSKEYUP))
-                    {
-                        size_t key_count;
-                        LPINPUT keyEventList;
-
-                        // If the original shortcut is a subset of the new shortcut
-                        if (commonKeys == src_size - 1)
-                        {
-                            key_count = dest_size - commonKeys;
-                            keyEventList = new INPUT[key_count]();
-                            memset(keyEventList, 0, sizeof(keyEventList));
-
-                            int i = 0;
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetActionKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                            if ((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) && it.second.targetShortcut.GetShiftKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetShiftKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) && it.second.targetShortcut.GetAltKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetAltKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) && it.second.targetShortcut.GetCtrlKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetCtrlKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) && it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                        }
-                        else
-                        {
-                            // Key up for all new shortcut keys, key down for original shortcut modifiers and dummy key but common keys aren't repeated
-                            key_count = (dest_size) + (src_size - 1) + 1 - (2 * (size_t)commonKeys);
-                            keyEventList = new INPUT[key_count]();
-                            memset(keyEventList, 0, sizeof(keyEventList));
-
-                            // Release new shortcut state (release in reverse order of shortcut to be accurate)
-                            int i = 0;
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetActionKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                            if ((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) && it.second.targetShortcut.GetShiftKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetShiftKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) && it.second.targetShortcut.GetAltKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetAltKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) && it.second.targetShortcut.GetCtrlKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetCtrlKey(), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) && it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked), KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-
-                            // Set old shortcut key down state
-
-                            if ((it.second.targetShortcut.GetWinKey(it.second.winKeyInvoked) != it.first.GetWinKey(it.second.winKeyInvoked)) && it.first.GetWinKey(it.second.winKeyInvoked) != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetWinKey(it.second.winKeyInvoked), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetCtrlKey() != it.first.GetCtrlKey()) && it.first.GetCtrlKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetCtrlKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetAltKey() != it.first.GetAltKey()) && it.first.GetAltKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetAltKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-                            if ((it.second.targetShortcut.GetShiftKey() != it.first.GetShiftKey()) && it.first.GetShiftKey() != NULL)
-                            {
-                                SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)it.first.GetShiftKey(), 0, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                                i++;
-                            }
-
-                            // Send dummy key
-                            SetKeyEvent(keyEventList, i, INPUT_KEYBOARD, (WORD)DUMMY_KEY, KEYEVENTF_KEYUP, KEYBOARDMANAGER_SHORTCUT_FLAG);
-                            i++;
-                        }
-
-                        it.second.isShortcutInvoked = false;
-                        it.second.winKeyInvoked = ModifierKey::Disabled;
-                        lock.unlock();
-                        UINT res = SendInput((UINT)key_count, keyEventList, sizeof(INPUT));
-                        delete[] keyEventList;
-                        return 1;
-                    }
-                }
-            }
-        }
-
-        return 0;
-    }
-
-    // Function to a handle an os-level shortcut remap
-    intptr_t HandleOSLevelShortcutRemapEvent(LowlevelKeyboardEvent* data) noexcept
-    {
-        // Check if the key event was generated by KeyboardManager to avoid remapping events generated by us.
-        if (data->lParam->dwExtraInfo != KEYBOARDMANAGER_SHORTCUT_FLAG)
-        {
-            bool result = HandleShortcutRemapEvent(data, keyboardManagerState.osLevelShortcutReMap, keyboardManagerState.osLevelShortcutReMap_mutex);
-            return result;
-        }
-
-        return 0;
-    }
-
-    // Function to return the window in focus
-    HWND GetFocusWindowHandle()
-    {
-        // Using GetGUIThreadInfo for getting the process of the window in focus. GetForegroundWindow has issues with UWP apps as it returns the Application Frame Host as its linked process
-        GUITHREADINFO guiThreadInfo;
-        guiThreadInfo.cbSize = sizeof(GUITHREADINFO);
-        GetGUIThreadInfo(0, &guiThreadInfo);
-
-        // If no window in focus, use the active window
-        if (guiThreadInfo.hwndFocus == nullptr)
-        {
-            return guiThreadInfo.hwndActive;
-        }
-        return guiThreadInfo.hwndFocus;
-    }
-
-    // Function to return the executable name of the application in focus
-    std::wstring GetCurrentApplication(bool keepPath)
-    {
-        HWND current_window_handle = GetFocusWindowHandle();
-        DWORD process_id;
-        DWORD nSize = MAX_PATH;
-        WCHAR buffer[MAX_PATH] = { 0 };
-
-        // Get process ID of the focus window
-        DWORD thread_id = GetWindowThreadProcessId(current_window_handle, &process_id);
-        HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_id);
-
-        // Get full path of the executable
-        bool res = QueryFullProcessImageName(hProc, 0, buffer, &nSize);
-        std::wstring process_name;
-        CloseHandle(hProc);
-
-        process_name = buffer;
-        if (res)
-        {
-            PathStripPath(buffer);
-
-            if (!keepPath)
-            {
-                process_name = buffer;
-            }
-        }
-        return process_name;
-    }
-
-    // Function to a handle an app-specific shortcut remap
-    intptr_t HandleAppSpecificShortcutRemapEvent(LowlevelKeyboardEvent* data) noexcept
-    {
-        // Check if the key event was generated by KeyboardManager to avoid remapping events generated by us.
-        if (data->lParam->dwExtraInfo != KEYBOARDMANAGER_SHORTCUT_FLAG)
-        {
-            std::wstring process_name = GetCurrentApplication(false);
-            if (process_name.empty())
-            {
-                return 0;
-            }
-
-            std::unique_lock<std::mutex> lock(keyboardManagerState.appSpecificShortcutReMap_mutex);
-            auto it = keyboardManagerState.appSpecificShortcutReMap.find(process_name);
-            if (it != keyboardManagerState.appSpecificShortcutReMap.end())
-            {
-                lock.unlock();
-                bool result = HandleShortcutRemapEvent(data, keyboardManagerState.appSpecificShortcutReMap[process_name], keyboardManagerState.appSpecificShortcutReMap_mutex);
-                return result;
-            }
-        }
-
-        return 0;
+        // Handle an os-level shortcut remapping
+        return KeyboardEventHandlers::HandleOSLevelShortcutRemapEvent(inputHandler, data, keyboardManagerState);
     }
 };
 

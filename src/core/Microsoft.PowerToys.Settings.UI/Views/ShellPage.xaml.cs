@@ -2,7 +2,11 @@
 // The Microsoft Corporation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
+using System;
+using System.Collections.Generic;
+using Microsoft.PowerToys.Settings.UI.Library;
 using Microsoft.PowerToys.Settings.UI.ViewModels;
+using Windows.Data.Json;
 using Windows.UI.Xaml.Controls;
 
 namespace Microsoft.PowerToys.Settings.UI.Views
@@ -13,7 +17,7 @@ namespace Microsoft.PowerToys.Settings.UI.Views
     public sealed partial class ShellPage : UserControl
     {
         /// <summary>
-        /// Delcaration for the ipc callback function.
+        /// Declaration for the ipc callback function.
         /// </summary>
         /// <param name="msg">message.</param>
         public delegate void IPCMessageCallback(string msg);
@@ -34,11 +38,23 @@ namespace Microsoft.PowerToys.Settings.UI.Views
         public static IPCMessageCallback SndRestartAsAdminMsgCallback { get; set; }
 
         /// <summary>
+        /// Gets or sets iPC callback function for checking updates.
+        /// </summary>
+        public static IPCMessageCallback CheckForUpdatesMsgCallback { get; set; }
+
+        /// <summary>
         /// Gets view model.
         /// </summary>
         public ShellViewModel ViewModel { get; } = new ShellViewModel();
 
+        /// <summary>
+        /// Gets a collection of functions that handle IPC responses.
+        /// </summary>
+        public List<System.Action<JsonObject>> IPCResponseHandleList { get; } = new List<System.Action<JsonObject>>();
+
         public static bool IsElevated { get; set; }
+
+        public static bool IsUserAnAdmin { get; set; }
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ShellPage"/> class.
@@ -54,27 +70,59 @@ namespace Microsoft.PowerToys.Settings.UI.Views
             shellFrame.Navigate(typeof(GeneralPage));
         }
 
+        public static int SendDefaultIPCMessage(string msg)
+        {
+            DefaultSndMSGCallback(msg);
+            return 0;
+        }
+
+        public static int SendCheckForUpdatesIPCMessage(string msg)
+        {
+            CheckForUpdatesMsgCallback(msg);
+            return 0;
+        }
+
+        public static int SendRestartAdminIPCMessage(string msg)
+        {
+            SndRestartAsAdminMsgCallback(msg);
+            return 0;
+        }
+
         /// <summary>
         /// Set Default IPC Message callback function.
         /// </summary>
-        /// <param name="implmentation">delegate function implementation.</param>
-        public void SetDefaultSndMessageCallback(IPCMessageCallback implmentation)
+        /// <param name="implementation">delegate function implementation.</param>
+        public static void SetDefaultSndMessageCallback(IPCMessageCallback implementation)
         {
-            DefaultSndMSGCallback = implmentation;
+            DefaultSndMSGCallback = implementation;
         }
 
         /// <summary>
         /// Set restart as admin IPC callback function.
         /// </summary>
-        /// <param name="implmentation">delegate function implementation.</param>
-        public void SetRestartAdminSndMessageCallback(IPCMessageCallback implmentation)
+        /// <param name="implementation">delegate function implementation.</param>
+        public static void SetRestartAdminSndMessageCallback(IPCMessageCallback implementation)
         {
-            SndRestartAsAdminMsgCallback = implmentation;
+            SndRestartAsAdminMsgCallback = implementation;
         }
 
-        public void SetElevationStatus(bool isElevated)
+        /// <summary>
+        /// Set check for updates IPC callback function.
+        /// </summary>
+        /// <param name="implementation">delegate function implementation.</param>
+        public static void SetCheckForUpdatesMessageCallback(IPCMessageCallback implementation)
+        {
+            CheckForUpdatesMsgCallback = implementation;
+        }
+
+        public static void SetElevationStatus(bool isElevated)
         {
             IsElevated = isElevated;
+        }
+
+        public static void SetIsUserAnAdmin(bool isAdmin)
+        {
+            IsUserAnAdmin = isAdmin;
         }
 
         public void Refresh()

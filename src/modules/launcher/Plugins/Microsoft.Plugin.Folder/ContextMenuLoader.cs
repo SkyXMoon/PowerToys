@@ -1,14 +1,17 @@
+// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.Threading.Tasks;
-using System.Windows;
-using Wox.Infrastructure.Logger;
-using Wox.Infrastructure.Image;
-using Wox.Plugin.SharedCommands;
-using Wox.Plugin;
 using System.Reflection;
+using System.Windows;
+using System.Windows.Input;
+using Wox.Infrastructure;
+using Wox.Plugin;
+using Wox.Plugin.Logger;
 
 namespace Microsoft.Plugin.Folder
 {
@@ -21,6 +24,7 @@ namespace Microsoft.Plugin.Folder
             _context = context;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "We want to keep the process alive, and instead log the exception")]
         public List<ContextMenuResult> LoadContextMenus(Result selectedResult)
         {
             var contextMenus = new List<ContextMenuResult>();
@@ -32,16 +36,14 @@ namespace Microsoft.Plugin.Folder
                 }
 
                 var icoPath = (record.Type == ResultType.File) ? Main.FileImagePath : Main.FolderImagePath;
-                var fileOrFolder = (record.Type == ResultType.File) ? "file" : "folder";
                 contextMenus.Add(new ContextMenuResult
                 {
                     PluginName = Assembly.GetExecutingAssembly().GetName().Name,
-                    Title = "Copy path",
+                    Title = Properties.Resources.Microsoft_plugin_folder_copy_path,
                     Glyph = "\xE8C8",
                     FontFamily = "Segoe MDL2 Assets",
-                    SubTitle = $"Copy the current {fileOrFolder} path to clipboard",
-                    AcceleratorKey = "C",
-                    AcceleratorModifiers = "Control",
+                    AcceleratorKey = Key.C,
+                    AcceleratorModifiers = ModifierKeys.Control,
                     Action = (context) =>
                     {
                         try
@@ -51,105 +53,87 @@ namespace Microsoft.Plugin.Folder
                         }
                         catch (Exception e)
                         {
-                            var message = "Fail to set text in clipboard";
-                            LogException(message, e);
+                            var message = Properties.Resources.Microsoft_plugin_folder_clipboard_failed;
+                            Log.Exception(message, e, GetType());
                             _context.API.ShowMsg(message);
                             return false;
                         }
-                    }
+                    },
+                });
+
+                contextMenus.Add(new ContextMenuResult
+                {
+                    PluginName = Assembly.GetExecutingAssembly().GetName().Name,
+                    Title = Properties.Resources.Microsoft_plugin_folder_open_in_console,
+                    Glyph = "\xE756",
+                    FontFamily = "Segoe MDL2 Assets",
+                    AcceleratorKey = Key.C,
+                    AcceleratorModifiers = ModifierKeys.Control | ModifierKeys.Shift,
+
+                    Action = (context) =>
+                    {
+                        try
+                        {
+                            if (record.Type == ResultType.File)
+                            {
+                                Helper.OpenInConsole(Path.GetDirectoryName(record.FullPath));
+                            }
+                            else
+                            {
+                                Helper.OpenInConsole(record.FullPath);
+                            }
+
+                            return true;
+                        }
+                        catch (Exception e)
+                        {
+                            Log.Exception($"Failed to open {record.FullPath} in console, {e.Message}", e, GetType());
+
+                            return false;
+                        }
+                    },
                 });
             }
 
             return contextMenus;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "We want to keep the process alive, and instead log the exception")]
         private ContextMenuResult CreateOpenContainingFolderResult(SearchResult record)
         {
             return new ContextMenuResult
             {
                 PluginName = Assembly.GetExecutingAssembly().GetName().Name,
-                Title = "Open containing folder",
+                Title = Properties.Resources.Microsoft_plugin_folder_open_containing_folder,
                 Glyph = "\xE838",
                 FontFamily = "Segoe MDL2 Assets",
-                AcceleratorKey = "E",
-                AcceleratorModifiers = "Control,Shift",
+                AcceleratorKey = Key.E,
+                AcceleratorModifiers = ModifierKeys.Control | ModifierKeys.Shift,
                 Action = _ =>
                 {
                     try
                     {
                         Process.Start("explorer.exe", $" /select,\"{record.FullPath}\"");
                     }
-                    catch(Exception e)
-                    {
-                        var message = $"Fail to open file at {record.FullPath}";
-                        LogException(message, e);
-                        _context.API.ShowMsg(message);
-                        return false;
-                    }
-
-                    return true;
-                }
-            };
-        }
-
-
-        private Result CreateOpenWithEditorResult(SearchResult record)
-        {
-            string editorPath = "notepad.exe"; // TODO add the ability to create a custom editor
-
-            var name = "Open With Editor: " + Path.GetFileNameWithoutExtension(editorPath);
-            return new Result
-            {
-                Title = name,
-                Action = _ =>
-                {
-                    try
-                    {
-                        Process.Start(editorPath, record.FullPath);
-                        return true;
-                    }
                     catch (Exception e)
                     {
-                        var message = $"Fail to editor for file at {record.FullPath}";
-                        LogException(message, e);
+                        var message = $"{Properties.Resources.Microsoft_plugin_folder_file_open_failed} {record.FullPath}";
+                        Log.Exception(message, e, GetType());
                         _context.API.ShowMsg(message);
+
                         return false;
                     }
+
+                    return true;
                 },
-                IcoPath = editorPath
             };
         }
-
-        public void LogException(string message, Exception e)
-        {
-            Log.Exception($"|Microsoft.Plugin.Folder.ContextMenu|{message}", e);
-        }
-
-        private bool CanRunAsDifferentUser(string path)
-        {
-            switch(Path.GetExtension(path))
-            {
-                case ".exe":
-                case ".bat":
-                    return true;
-
-                default:
-                    return false;
-
-            }
-        }
-    }
-
-    public class SearchResult
-    {
-        public string FullPath { get; set; }
-        public ResultType Type { get; set; }
     }
 
     public enum ResultType
     {
         Volume,
         Folder,
-        File
+        File,
     }
 }

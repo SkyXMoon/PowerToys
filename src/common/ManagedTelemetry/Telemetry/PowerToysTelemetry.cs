@@ -3,7 +3,7 @@
 // See the LICENSE file in the project root for more information.
 
 using System.Diagnostics.Tracing;
-using PreviewHandlerCommon.Telemetry;
+using Microsoft.PowerToys.Telemetry.Events;
 
 namespace Microsoft.PowerToys.Telemetry
 {
@@ -12,7 +12,6 @@ namespace Microsoft.PowerToys.Telemetry
     /// </summary>
     public class PowerToysTelemetry : TelemetryBase
     {
-
         /// <summary>
         /// Name for ETW event.
         /// </summary>
@@ -29,19 +28,22 @@ namespace Microsoft.PowerToys.Telemetry
         /// <summary>
         /// Gets an instance of the <see cref="PowerLauncherTelemetry"/> class.
         /// </summary>
-        public static PowerToysTelemetry Log = new PowerToysTelemetry();
+        public static PowerToysTelemetry Log { get; } = new PowerToysTelemetry();
 
         /// <summary>
-        /// Publishes ETW event when an action is triggered on 
+        /// Publishes ETW event when an action is triggered on
         /// </summary>
-        public void WriteEvent<T>(T telemetryEvent) 
+        public void WriteEvent<T>(T telemetryEvent)
+            where T : EventBase, IEvent
         {
-            this.Write<T>(null, new EventSourceOptions()
-            {
-                Keywords = ProjectKeywordMeasure,
-                Tags = ProjectTelemetryTagProductAndServicePerformance,
-            },
-            telemetryEvent);
+            this.Write<T>(
+                null,
+                new EventSourceOptions()
+                {
+                    Keywords = ProjectKeywordMeasure,
+                    Tags = ProjectTelemetryTagProductAndServicePerformance,
+                },
+                telemetryEvent);
         }
     }
 }

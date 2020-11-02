@@ -1,13 +1,14 @@
 ﻿// Copyright (c) Microsoft Corporation
 // The Microsoft Corporation licenses this file to you under the MIT license.
-// See the LICENSE file in the project root for more information.  Code forked from Betsegaw Tadele's https://github.com/betsegaw/windowwalker/
+// See the LICENSE file in the project root for more information.
 
+// Code forked from Betsegaw Tadele's https://github.com/betsegaw/windowwalker/
 using System;
 
 namespace Microsoft.Plugin.WindowWalker.Components
 {
     /// <summary>
-    /// Class containg methods to control the live preview
+    /// Class containing methods to control the live preview
     /// </summary>
     internal class LivePreview
     {
@@ -15,11 +16,11 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// Makes sure that a window is excluded from the live preview
         /// </summary>
         /// <param name="hwnd">handle to the window to exclude</param>
-        public static void SetWindowExlusionFromLivePreview(IntPtr hwnd)
+        public static void SetWindowExclusionFromLivePreview(IntPtr hwnd)
         {
-            int renderPolicy = (int)InteropAndHelpers.DwmNCRenderingPolicy.Enabled;
+            int renderPolicy = (int)NativeMethods.DwmNCRenderingPolicy.Enabled;
 
-            InteropAndHelpers.DwmSetWindowAttribute(
+            _ = NativeMethods.DwmSetWindowAttribute(
                 hwnd,
                 12,
                 ref renderPolicy,
@@ -33,11 +34,11 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// <param name="windowToSpare">the window which should not be transparent but is not the target window</param>
         public static void ActivateLivePreview(IntPtr targetWindow, IntPtr windowToSpare)
         {
-            InteropAndHelpers.DwmpActivateLivePreview(
+            _ = NativeMethods.DwmpActivateLivePreview(
                     true,
                     targetWindow,
                     windowToSpare,
-                    InteropAndHelpers.LivePreviewTrigger.Superbar,
+                    NativeMethods.LivePreviewTrigger.Superbar,
                     IntPtr.Zero);
         }
 
@@ -46,11 +47,11 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// </summary>
         public static void DeactivateLivePreview()
         {
-            InteropAndHelpers.DwmpActivateLivePreview(
+            _ = NativeMethods.DwmpActivateLivePreview(
                     false,
                     IntPtr.Zero,
                     IntPtr.Zero,
-                    InteropAndHelpers.LivePreviewTrigger.AltTab,
+                    NativeMethods.LivePreviewTrigger.AltTab,
                     IntPtr.Zero);
         }
     }

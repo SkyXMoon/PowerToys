@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "KeyDelay.h"
 
+// NOTE: The destructor should never be called on the DelayThread, i.e. from any of shortPress, longPress or longPressReleased, as it will re-enter the mutex. Even if the mutex is removed it will deadlock because of the join statement
 KeyDelay::~KeyDelay()
 {
     std::unique_lock<std::mutex> l(_queueMutex);
@@ -24,7 +25,7 @@ KeyTimedEvent KeyDelay::NextEvent()
     return ev;
 }
 
-bool KeyDelay::CheckIfMillisHaveElapsed(DWORD first, DWORD last, DWORD duration)
+bool KeyDelay::CheckIfMillisHaveElapsed(DWORD64 first, DWORD64 last, DWORD64 duration)
 {
     if (first < last && first <= first + duration)
     {
@@ -32,8 +33,8 @@ bool KeyDelay::CheckIfMillisHaveElapsed(DWORD first, DWORD last, DWORD duration)
     }
     else
     {
-        first += ULONG_MAX / 2;
-        last += ULONG_MAX / 2;
+        first += ULLONG_MAX / 2;
+        last += ULLONG_MAX / 2;
         return first + duration < last;
     }
 }
@@ -99,7 +100,7 @@ bool KeyDelay::HandleOnHold(std::unique_lock<std::mutex>& cvLock)
         }
     }
 
-    if (CheckIfMillisHaveElapsed(_initialHoldKeyDown, GetTickCount(), LONG_PRESS_DELAY_MILLIS))
+    if (CheckIfMillisHaveElapsed(_initialHoldKeyDown, GetTickCount64(), LONG_PRESS_DELAY_MILLIS))
     {
         if (_onLongPressDetected != nullptr)
         {

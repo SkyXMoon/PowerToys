@@ -1,5 +1,5 @@
 #### [`main.cpp`](/src/runner/main.cpp)
-Contains the executable starting point, initialization code and the list of known PowerToys. All singletones are also initialized here at the start. Loads all the powertoys by scanning the `./modules` folder and `enable()`s those makred as enabled in `%LOCALAPPDATA%\Microsoft\PowerToys\settings.json` config. Then it runs [a message loop](https://docs.microsoft.com/en-us/windows/win32/winmsg/using-messages-and-message-queues) for the tray UI. Note that this message loop also [handles lowlevel_keyboard_hook events](https://github.com/microsoft/PowerToys/blob/1760af50c8803588cb575167baae0439af38a9c1/src/runner/lowlevel_keyboard_event.cpp#L24).
+Contains the executable starting point, initialization code and the list of known PowerToys. All singletones are also initialized here at the start. Loads all the powertoys by scanning the `./modules` folder and `enable()`s those marked as enabled in `%LOCALAPPDATA%\Microsoft\PowerToys\settings.json` config. Then it runs [a message loop](https://docs.microsoft.com/en-us/windows/win32/winmsg/using-messages-and-message-queues) for the tray UI. Note that this message loop also [handles lowlevel_keyboard_hook events](https://github.com/microsoft/PowerToys/blob/1760af50c8803588cb575167baae0439af38a9c1/src/runner/lowlevel_keyboard_event.cpp#L24).
 
 #### [`general_settings.cpp`](./general_settings.cpp)
 #### [`powertoy_module.h`](/src/runner/powertoy_module.h) and [`powertoy_module.cpp`](/src/runner/powertoy_module.cpp)
@@ -21,7 +21,7 @@ transfer received json message from the [Settings window](/doc/devdocs/settings.
 Contains code for starting the PowerToys settings window and communicating with it. Settings window is a separate process, so we're using [Windows pipes](https://docs.microsoft.com/en-us/windows/win32/ipc/pipes) as a transport for json messages.
 
 #### [`general_settings.cpp`](/src/runner/general_settings.cpp)
-Contains code for loading, saving and applying the general setings.
+Contains code for loading, saving and applying the general settings.
 
 #### [`auto_start_helper.cpp`](/src/runner/auto_start_helper.cpp)
 Contains helper code for registering and unregistering PowerToys to run when the user logs in.

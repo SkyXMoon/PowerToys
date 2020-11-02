@@ -20,9 +20,19 @@ namespace FancyZonesEditor
         // TODO: share the constants b/w C# Editor and FancyZoneLib
         public const int MaxZones = 40;
         private readonly Settings _settings = ((App)Application.Current).ZoneSettings;
+
+        // Localizable string
         private static readonly string _defaultNamePrefix = "Custom Layout ";
 
         public int WrapPanelItemSize { get; set; } = 262;
+
+        public double SettingsTextMaxWidth
+        {
+            get
+            {
+                return (Width / 2) - 60;
+            }
+        }
 
         public MainWindow()
         {
@@ -31,7 +41,7 @@ namespace FancyZonesEditor
 
             KeyUp += MainWindow_KeyUp;
 
-            if (_settings.WorkArea.Height < 900)
+            if (Settings.WorkArea.Height < 900)
             {
                 SizeToContent = SizeToContent.WidthAndHeight;
                 WrapPanelItemSize = 180;
@@ -146,11 +156,13 @@ namespace FancyZonesEditor
         private void Apply_Click(object sender, RoutedEventArgs e)
         {
             EditorOverlay mainEditor = EditorOverlay.Current;
+
             if (mainEditor.DataContext is LayoutModel model)
             {
-                if (model is GridLayoutModel)
+                // If custom canvas layout has been scaled, persisting is needed
+                if (model is CanvasLayoutModel && (model as CanvasLayoutModel).IsScaled)
                 {
-                    model.Apply();
+                    model.Persist();
                 }
                 else
                 {

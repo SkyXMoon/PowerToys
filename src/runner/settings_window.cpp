@@ -11,13 +11,19 @@
 #include "common/windows_colors.h"
 #include "common/common.h"
 #include "restart_elevated.h"
+#include "update_utils.h"
+#include "centralized_kb_hook.h"
 
 #include <common/json.h>
 #include <common\settings_helpers.cpp>
+#include <common/os-detect.h>
+#include <common/version.h>
+#include <common/VersionHelper.h>
 
 #define BUFSIZE 1024
 
 TwoWayPipeMessageIPC* current_settings_ipc = NULL;
+std::atomic_bool g_isLaunchInProgress = false;
 
 json::JsonObject get_power_toys_settings()
 {
@@ -45,8 +51,9 @@ json::JsonObject get_all_settings()
     return result;
 }
 
-void dispatch_json_action_to_module(const json::JsonObject& powertoys_configs)
+std::optional<std::wstring> dispatch_json_action_to_module(const json::JsonObject& powertoys_configs)
 {
+    std::optional<std::wstring> result;
     for (const auto& powertoy_element : powertoys_configs)
     {
         const std::wstring name{ powertoy_element.Key().c_str() };
@@ -54,15 +61,38 @@ void dispatch_json_action_to_module(const json::JsonObject& powertoys_configs)
         // so it has to be the "restart as (non-)elevated" button.
         if (name == L"general")
         {
-            if (is_process_elevated())
+            try
             {
-                schedule_restart_as_non_elevated();
-                PostQuitMessage(0);
+                const auto value = powertoy_element.Value().GetObjectW();
+                const auto action = value.GetNamedString(L"action_name");
+                if (action == L"restart_elevation")
+                {
+                    if (is_process_elevated())
+                    {
+                        schedule_restart_as_non_elevated();
+                        PostQuitMessage(0);
+                    }
+                    else
+                    {
+                        schedule_restart_as_elevated();
+                        PostQuitMessage(0);
+                    }
+                }
+                else if (action == L"check_for_updates")
+                {
+                    std::wstring latestVersion = check_for_updates();
+                    VersionHelper current_version(VERSION_MAJOR, VERSION_MINOR, VERSION_REVISION);
+                    bool isRunningLatest = latestVersion.compare(current_version.toWstring()) == 0;
+
+                    json::JsonObject json;
+                    json.SetNamedValue(L"version", json::JsonValue::CreateStringValue(latestVersion));
+                    json.SetNamedValue(L"isVersionLatest", json::JsonValue::CreateBooleanValue(isRunningLatest));
+
+                    result.emplace(json.Stringify());
+                }
             }
-            else
+            catch (...)
             {
-                schedule_restart_as_elevated();
-                PostQuitMessage(0);
             }
         }
         else if (modules().find(name) != modules().end())
@@ -71,13 +101,17 @@ void dispatch_json_action_to_module(const json::JsonObject& powertoys_configs)
             modules().at(name)->call_custom_action(element.c_str());
         }
     }
+
+    return result;
 }
 
 void send_json_config_to_module(const std::wstring& module_key, const std::wstring& settings)
 {
-    if (modules().find(module_key) != modules().end())
+    auto moduleIt = modules().find(module_key);
+    if (moduleIt != modules().end())
     {
-        modules().at(module_key)->set_config(settings.c_str());
+        moduleIt->second->set_config(settings.c_str());
+        moduleIt->second.update_hotkeys();
     }
 }
 
@@ -126,7 +160,11 @@ void dispatch_received_json(const std::wstring& json_to_parse)
         }
         else if (name == L"action")
         {
-            dispatch_json_action_to_module(value.GetObjectW());
+            auto result = dispatch_json_action_to_module(value.GetObjectW());
+            if (result.has_value())
+            {
+                current_settings_ipc->send(result.value());
+            }
         }
     }
     return;
@@ -202,42 +240,8 @@ BOOL run_settings_non_elevated(LPCWSTR executable_path, LPWSTR executable_args, 
                                           nullptr,
                                           &siex.StartupInfo,
                                           process_info);
-
+    g_isLaunchInProgress = false;
     return process_created;
-}
-
-// The following three helper functions determine if the user has a build version higher than or equal to 19h1, as that is a requirement for xaml islands
-// Source : Microsoft-ui-xaml github
-// Link: https://github.com/microsoft/microsoft-ui-xaml/blob/c045cde57c5c754683d674634a0baccda34d58c4/dev/dll/SharedHelpers.cpp
-template<uint16_t APIVersion> bool IsAPIContractVxAvailable()
-{
-    static bool isAPIContractVxAvailableInitialized = false;
-    static bool isAPIContractVxAvailable = false;
-    if (!isAPIContractVxAvailableInitialized)
-    {
-        isAPIContractVxAvailableInitialized = true;
-        isAPIContractVxAvailable = winrt::Windows::Foundation::Metadata::ApiInformation::IsApiContractPresent(L"Windows.Foundation.UniversalApiContract", APIVersion);
-    }
-
-    return isAPIContractVxAvailable;
-}
-
-
-bool IsAPIContractV8Available()
-{
-    return IsAPIContractVxAvailable<8>();
-}
-
-bool Is19H1OrHigher()
-{
-    return IsAPIContractV8Available();
-}
-
-// This function returns true if the build is 19h1 or higher, so that we deploy the new settings.
-// It returns false otherwise.
-bool use_new_settings()
-{
-    return Is19H1OrHigher();
 }
 
 
@@ -245,6 +249,8 @@ DWORD g_settings_process_id = 0;
 
 void run_settings_window()
 {
+    g_isLaunchInProgress = true;
+
     PROCESS_INFORMATION process_info = { 0 };
     HANDLE hToken = nullptr;
 
@@ -258,7 +264,7 @@ void run_settings_window()
     // Arg 1: executable path.
     std::wstring executable_path = get_module_folderpath();
 
-    if (use_new_settings())
+    if (UseNewSettings())
     {
         executable_path.append(L"\\SettingsUIRunner\\Microsoft.PowerToys.Settings.UI.Runner.exe");
     }
@@ -309,6 +315,22 @@ void run_settings_window()
         settings_elevatedStatus = L"false";
     }
 
+    bool isAdmin{ get_general_settings().isAdmin };
+    std::wstring settings_isUserAnAdmin;
+
+    if (isAdmin)
+    {
+        settings_isUserAnAdmin = L"true";
+    }
+    else
+    {
+        settings_isUserAnAdmin = L"false";
+    }
+
+    // create general settings file to initialze the settings file with installation configurations like :
+    // 1. Run on start up.
+    PTSettingsHelper::save_general_settings(save_settings.to_json());
+
     std::wstring executable_args = L"\"";
     executable_args.append(executable_path);
     executable_args.append(L"\" ");
@@ -321,6 +343,8 @@ void run_settings_window()
     executable_args.append(settings_theme);
     executable_args.append(L" ");
     executable_args.append(settings_elevatedStatus);
+    executable_args.append(L" ");
+    executable_args.append(settings_isUserAnAdmin);
 
     BOOL process_created = false;
     if (is_process_elevated())
@@ -348,6 +372,10 @@ void run_settings_window()
         {
             goto LExit;
         }
+        else
+        {
+            g_isLaunchInProgress = false;
+        }
     }
 
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
@@ -362,7 +390,7 @@ void run_settings_window()
     WaitForSingleObject(process_info.hProcess, INFINITE);
     if (WaitForSingleObject(process_info.hProcess, INFINITE) != WAIT_OBJECT_0)
     {
-        show_last_error_message(L"Couldn't wait on the Settings Window to close.", GetLastError());
+        show_last_error_message(L"Couldn't wait on the Settings Window to close.", GetLastError(), L"PowerToys - runner");
     }
 
 LExit:
@@ -429,7 +457,10 @@ void open_settings_window()
     }
     else
     {
-        std::thread(run_settings_window).detach();
+        if (!g_isLaunchInProgress)
+        {
+            std::thread(run_settings_window).detach();
+        }
     }
 }
 

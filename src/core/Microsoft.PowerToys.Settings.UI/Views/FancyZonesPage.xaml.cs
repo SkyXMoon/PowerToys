@@ -2,33 +2,23 @@
 // The Microsoft Corporation licenses this file to you under the MIT license.
 // See the LICENSE file in the project root for more information.
 
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Runtime.InteropServices.WindowsRuntime;
-using Microsoft.PowerToys.Settings.UI.ViewModels;
-using Windows.Foundation;
-using Windows.Foundation.Collections;
-using Windows.UI.Xaml;
+using Microsoft.PowerToys.Settings.UI.Library;
+using Microsoft.PowerToys.Settings.UI.Library.Utilities;
+using Microsoft.PowerToys.Settings.UI.Library.ViewModels;
 using Windows.UI.Xaml.Controls;
-using Windows.UI.Xaml.Controls.Primitives;
-using Windows.UI.Xaml.Data;
-using Windows.UI.Xaml.Input;
-using Windows.UI.Xaml.Media;
-using Windows.UI.Xaml.Navigation;
 
 namespace Microsoft.PowerToys.Settings.UI.Views
 {
     public sealed partial class FancyZonesPage : Page
     {
-        public FancyZonesViewModel ViewModel { get; set; }
+        private FancyZonesViewModel ViewModel { get; set; }
 
         public FancyZonesPage()
         {
-            this.InitializeComponent();
-            ViewModel = new FancyZonesViewModel();
-            this.FZSettingsView.DataContext = ViewModel;
+            InitializeComponent();
+            var settingsUtils = new SettingsUtils(new SystemIOProvider());
+            ViewModel = new FancyZonesViewModel(SettingsRepository<GeneralSettings>.GetInstance(settingsUtils), SettingsRepository<FancyZonesSettings>.GetInstance(settingsUtils), ShellPage.SendDefaultIPCMessage);
+            DataContext = ViewModel;
         }
     }
 }

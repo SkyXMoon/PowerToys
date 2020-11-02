@@ -1,103 +1,94 @@
+// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Security.Principal;
-using System.Text;
-using System.Threading.Tasks;
-using System.Xml.Linq;
-using Windows.ApplicationModel;
-using Windows.Management.Deployment;
-using AppxPackaing;
-using Shell;
-using Wox.Infrastructure;
-using Microsoft.Plugin.Program.Logger;
-using IStream = AppxPackaing.IStream;
-using Rect = System.Windows.Rect;
-using Windows.UI.Xaml.Media.Imaging;
-using Windows.UI.Xaml.Media;
-using System.Windows.Controls;
-using Wox.Plugin;
 using System.Reflection;
-using Wox.Plugin.SharedCommands;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Xml.Linq;
+using Microsoft.Plugin.Program.Logger;
+using Microsoft.Plugin.Program.Win32;
+using Wox.Plugin.Logger;
 
 namespace Microsoft.Plugin.Program.Programs
 {
     [Serializable]
-    public class UWP
+    public partial class UWP
     {
         public string Name { get; }
+
         public string FullName { get; }
+
         public string FamilyName { get; }
+
         public string Location { get; set; }
 
-        public Application[] Apps { get; set; }
+        public IList<UWPApplication> Apps { get; private set; }
 
         public PackageVersion Version { get; set; }
 
-        public UWP(Package package)
+        public static IPackageManager PackageManagerWrapper { get; set; } = new PackageManagerWrapper();
+
+        public UWP(IPackage package)
         {
-            Location = package.InstalledLocation.Path;
-            Name = package.Id.Name;
-            FullName = package.Id.FullName;
-            FamilyName = package.Id.FamilyName;
-            InitializeAppInfo();
-            Apps = Apps.Where(a =>
+            if (package == null)
             {
-                var valid =
-                    !string.IsNullOrEmpty(a.UserModelId) &&
-                    !string.IsNullOrEmpty(a.DisplayName);
-                return valid;
-            }).ToArray();
+                throw new ArgumentNullException(nameof(package));
+            }
+
+            Name = package.Name;
+            FullName = package.FullName;
+            FamilyName = package.FamilyName;
         }
 
-        private void InitializeAppInfo()
+        public void InitializeAppInfo(string installedLocation)
         {
-            var path = Path.Combine(Location, "AppxManifest.xml");
+            Location = installedLocation;
+            var path = Path.Combine(installedLocation, "AppxManifest.xml");
 
             var namespaces = XmlNamespaces(path);
             InitPackageVersion(namespaces);
 
-            var appxFactory = new AppxFactory();
-            IStream stream;
             const uint noAttribute = 0x80;
-            const Stgm exclusiveRead = Stgm.Read | Stgm.ShareExclusive;
-            var hResult = SHCreateStreamOnFileEx(path, exclusiveRead, noAttribute, false, null, out stream);
+            const Stgm exclusiveRead = Stgm.Read;
+            var hResult = NativeMethods.SHCreateStreamOnFileEx(path, exclusiveRead, noAttribute, false, null, out IStream stream);
 
             if (hResult == Hresult.Ok)
             {
-                var reader = appxFactory.CreateManifestReader(stream);
-                var manifestApps = reader.GetApplications();
-                var apps = new List<Application>();
-                while (manifestApps.GetHasCurrent() != 0)
+                var apps = new List<UWPApplication>();
+
+                List<IAppxManifestApplication> appsViaManifests = AppxPackageHelper.GetAppsFromManifest(stream);
+                foreach (var appInManifest in appsViaManifests)
                 {
-                    var manifestApp = manifestApps.GetCurrent();
-                    var appListEntry = manifestApp.GetStringValue("AppListEntry");
-                    if (appListEntry != "none")
-                    {
-                        var app = new Application(manifestApp, this);
-                        apps.Add(app);
-                    }
-                    manifestApps.MoveNext();
+                    var app = new UWPApplication(appInManifest, this);
+                    apps.Add(app);
                 }
-                Apps = apps.Where(a => a.AppListEntry != "none").ToArray();
+
+                Apps = apps.Where(a =>
+                {
+                    var valid =
+                    !string.IsNullOrEmpty(a.UserModelId) &&
+                    !string.IsNullOrEmpty(a.DisplayName) &&
+                    a.AppListEntry != "none";
+
+                    return valid;
+                }).ToArray();
             }
             else
             {
                 var e = Marshal.GetExceptionForHR((int)hResult);
-                ProgramLogger.LogException($"|UWP|InitializeAppInfo|{path}" +
-                                                "|Error caused while trying to get the details of the UWP program", e);
+                ProgramLogger.Exception("Error caused while trying to get the details of the UWP program", e, GetType(), path);
 
-                Apps = new List<Application>().ToArray();
+                Apps = new List<UWPApplication>().ToArray();
             }
         }
 
-
-
-        /// http://www.hanselman.com/blog/GetNamespacesFromAnXMLDocumentWithXPathDocumentAndLINQToXML.aspx
-        private string[] XmlNamespaces(string path)
+        // http://www.hanselman.com/blog/GetNamespacesFromAnXMLDocumentWithXPathDocumentAndLINQToXML.aspx
+        private static string[] XmlNamespaces(string path)
         {
             XDocument z = XDocument.Load(path);
             if (z.Root != null)
@@ -106,18 +97,15 @@ namespace Microsoft.Plugin.Program.Programs
                     Where(a => a.IsNamespaceDeclaration).
                     GroupBy(
                         a => a.Name.Namespace == XNamespace.None ? string.Empty : a.Name.LocalName,
-                        a => XNamespace.Get(a.Value)
-                    ).Select(
-                        g => g.First().ToString()
-                    ).ToArray();
+                        a => XNamespace.Get(a.Value)).Select(
+                        g => g.First().ToString()).ToArray();
                 return namespaces;
             }
             else
             {
-                ProgramLogger.LogException($"|UWP|XmlNamespaces|{path}" +
-                                                $"|Error occured while trying to get the XML from {path}", new ArgumentNullException());
+                Log.Error($"Error occurred while trying to get the XML from {path}", MethodBase.GetCurrentMethod().DeclaringType);
 
-                return new string[] { };
+                return Array.Empty<string>();
             }
         }
 
@@ -125,9 +113,9 @@ namespace Microsoft.Plugin.Program.Programs
         {
             var versionFromNamespace = new Dictionary<string, PackageVersion>
             {
-                {"http://schemas.microsoft.com/appx/manifest/foundation/windows10", PackageVersion.Windows10},
-                {"http://schemas.microsoft.com/appx/2013/manifest", PackageVersion.Windows81},
-                {"http://schemas.microsoft.com/appx/2010/manifest", PackageVersion.Windows8},
+                { "http://schemas.microsoft.com/appx/manifest/foundation/windows10", PackageVersion.Windows10 },
+                { "http://schemas.microsoft.com/appx/2013/manifest", PackageVersion.Windows81 },
+                { "http://schemas.microsoft.com/appx/2010/manifest", PackageVersion.Windows8 },
             };
 
             foreach (var n in versionFromNamespace.Keys)
@@ -139,14 +127,13 @@ namespace Microsoft.Plugin.Program.Programs
                 }
             }
 
-            ProgramLogger.LogException($"|UWP|XmlNamespaces|{Location}" +
-                                                "|Trying to get the package version of the UWP program, but a unknown UWP appmanifest version  "
-                                                + $"{FullName} from location {Location} is returned.", new FormatException());
+            ProgramLogger.Exception($"|Trying to get the package version of the UWP program, but a unknown UWP appmanifest version {FullName} from location {Location} is returned.", new FormatException(), GetType(), Location);
 
             Version = PackageVersion.Unknown;
         }
 
-        public static Application[] All()
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Intentially keeping the process alive.")]
+        public static UWPApplication[] All()
         {
             var windows10 = new Version(10, 0);
             var support = Environment.OSVersion.Version.Major >= windows10.Major;
@@ -158,26 +145,20 @@ namespace Microsoft.Plugin.Program.Programs
                     try
                     {
                         u = new UWP(p);
+                        u.InitializeAppInfo(p.InstalledLocation);
                     }
-#if !DEBUG
                     catch (Exception e)
                     {
-                        ProgramLogger.LogException($"|UWP|All|{p.InstalledLocation}|An unexpected error occured and "
-                                                        + $"unable to convert Package to UWP for {p.Id.FullName}", e);
-                        return new Application[] { };
+                        ProgramLogger.Exception($"Unable to convert Package to UWP for {p.FullName}", e, MethodBase.GetCurrentMethod().DeclaringType, p.InstalledLocation);
+
+                        return Array.Empty<UWPApplication>();
                     }
-#endif
-#if DEBUG //make developer aware and implement handling
-                    catch
-                    {
-                        throw;
-                    }
-#endif
+
                     return u.Apps;
                 }).ToArray();
 
                 var updatedListWithoutDisabledApps = applications
-                                                        .Where(t1 => !Main._settings.DisabledProgramSources
+                                                        .Where(t1 => !Main.Settings.DisabledProgramSources
                                                                         .Any(x => x.UniqueIdentifier == t1.UniqueIdentifier))
                                                         .Select(x => x);
 
@@ -185,45 +166,33 @@ namespace Microsoft.Plugin.Program.Programs
             }
             else
             {
-                return new Application[] { };
+                return Array.Empty<UWPApplication>();
             }
         }
 
-        private static IEnumerable<Package> CurrentUserPackages()
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Intentially keeping the process alive.")]
+        private static IEnumerable<IPackage> CurrentUserPackages()
         {
-            var u = WindowsIdentity.GetCurrent().User;
-
-            if (u != null)
+            var ps = PackageManagerWrapper.FindPackagesForCurrentUser();
+            ps = ps.Where(p =>
             {
-                var id = u.Value;
-                var m = new PackageManager();
-                var ps = m.FindPackagesForUser(id);
-                ps = ps.Where(p =>
+                bool valid;
+                try
                 {
-                    bool valid;
-                    try
-                    {
-                        var f = p.IsFramework;
-                        var d = p.IsDevelopmentMode;
-                        var path = p.InstalledLocation.Path;
-                        valid = !f && !d && !string.IsNullOrEmpty(path);
-                    }
-                    catch (Exception e)
-                    {
-                        ProgramLogger.LogException("UWP" ,"CurrentUserPackages", $"id","An unexpected error occured and "
-                                                   + $"unable to verify if package is valid", e);
-                        return false;
-                    }
-                    
-                    
-                    return valid;
-                });
-                return ps;
-            }
-            else
-            {
-                return new Package[] { };
-            }
+                    var f = p.IsFramework;
+                    var path = p.InstalledLocation;
+                    valid = !f && !string.IsNullOrEmpty(path);
+                }
+                catch (Exception e)
+                {
+                    ProgramLogger.Exception("An unexpected error occurred and unable to verify if package is valid", e, MethodBase.GetCurrentMethod().DeclaringType, "id");
+                    return false;
+                }
+
+                return valid;
+            });
+
+            return ps;
         }
 
         public override string ToString()
@@ -235,7 +204,8 @@ namespace Microsoft.Plugin.Program.Programs
         {
             if (obj is UWP uwp)
             {
-                return FamilyName.Equals(uwp.FamilyName);
+                // Using CurrentCultureIgnoreCase since this is used with FamilyName
+                return FamilyName.Equals(uwp.FamilyName, StringComparison.CurrentCultureIgnoreCase);
             }
             else
             {
@@ -245,354 +215,8 @@ namespace Microsoft.Plugin.Program.Programs
 
         public override int GetHashCode()
         {
-            return FamilyName.GetHashCode();
-        }
-
-        [Serializable]
-        public class Application : IProgram
-        {
-            public string AppListEntry { get; set; }
-            public string UniqueIdentifier { get; set; }
-            public string DisplayName { get; set; }
-            public string Description { get; set; }
-            public string UserModelId { get; set; }
-            public string BackgroundColor { get; set; }
-
-            public string EntryPoint { get; set; }
-            public string Name => DisplayName;
-            public string Location => Package.Location;
-            public bool Enabled { get; set; }
-            public bool CanRunElevated {get;set;}
-
-            public string LogoUri { get; set; }
-            public string LogoPath { get; set; }
-            public UWP Package { get; set; }
-
-            private int Score(string query)
-            {
-                var displayNameMatch = StringMatcher.FuzzySearch(query, DisplayName);
-                var descriptionMatch = StringMatcher.FuzzySearch(query, Description);
-                var score = new[] { displayNameMatch.Score, descriptionMatch.Score }.Max();
-                return score;
-            }
-
-            public Result Result(string query, IPublicAPI api)
-            {
-                var score = Score(query);
-                if (score <= 0)
-                { // no need to create result if score is 0
-                    return null;
-                }
-
-                var result = new Result
-                {
-                    SubTitle = "UWP application",
-                    Icon = Logo,
-                    Score = score,
-                    ContextData = this,
-                    Action = e =>
-                    {
-                        Launch(api);
-                        return true;
-                    }
-                };
-
-                if (Description.Length >= DisplayName.Length &&
-                    Description.Substring(0, DisplayName.Length) == DisplayName)
-                {
-                    result.Title = Description;
-                    result.TitleHighlightData = StringMatcher.FuzzySearch(query, Description).MatchData;
-                }
-                else
-                {
-                    result.Title = DisplayName;
-                    result.TitleHighlightData = StringMatcher.FuzzySearch(query, DisplayName).MatchData;
-                }
-                return result;
-            }
-
-            public List<ContextMenuResult> ContextMenus(IPublicAPI api)
-            {
-                var contextMenus = new List<ContextMenuResult>();
-
-                if (CanRunElevated)
-                {
-                    contextMenus.Add(
-                            new ContextMenuResult
-                            {
-                                PluginName = Assembly.GetExecutingAssembly().GetName().Name,
-                                Title = api.GetTranslation("wox_plugin_program_run_as_administrator"),
-                                Glyph = "\xE7EF",
-                                FontFamily = "Segoe MDL2 Assets",
-                                AcceleratorKey = "Enter",
-                                AcceleratorModifiers = "Control,Shift",
-                                Action = _ =>
-                                {
-                                    string command = "shell:AppsFolder\\" + UniqueIdentifier;
-                                    command.Trim();
-                                    command = Environment.ExpandEnvironmentVariables(command);
-
-                                    var info = ShellCommand.SetProcessStartInfo(command, verb: "runas");
-                                    info.UseShellExecute = true;
-
-                                    Process.Start(info);
-                                    return true;
-                                }
-                            }
-                        );
-                }
-               contextMenus.Add(
-                   new ContextMenuResult
-                   {
-                       PluginName = Assembly.GetExecutingAssembly().GetName().Name,
-                       Title = api.GetTranslation("wox_plugin_program_open_containing_folder"),
-                       Glyph = "\xE838",
-                       FontFamily = "Segoe MDL2 Assets",
-                       AcceleratorKey = "E",
-                       AcceleratorModifiers = "Control,Shift",
-                       Action = _ =>
-                       {
-                           Main.StartProcess(Process.Start, new ProcessStartInfo("explorer", Package.Location));
-
-                           return true;
-                       }
-                   });
-
-                
-                return contextMenus;
-            }
-
-            private async void Launch(IPublicAPI api)
-            {
-                var appManager = new ApplicationActivationManager();
-                uint unusedPid;
-                const string noArgs = "";
-                const ACTIVATEOPTIONS noFlags = ACTIVATEOPTIONS.AO_NONE;
-                await Task.Run(() =>
-                {
-                    try
-                    {
-                        appManager.ActivateApplication(UserModelId, noArgs, noFlags, out unusedPid);
-                    }
-                    catch (Exception)
-                    {
-                        var name = "Plugin: Program";
-                        var message = $"Can't start UWP: {DisplayName}";
-                        api.ShowMsg(name, message, string.Empty);
-                    }
-                });
-            }
-
-            public Application(IAppxManifestApplication manifestApp, UWP package)
-            {
-                UserModelId = manifestApp.GetAppUserModelId();
-                UniqueIdentifier = manifestApp.GetAppUserModelId();
-                DisplayName = manifestApp.GetStringValue("DisplayName");
-                Description = manifestApp.GetStringValue("Description");
-                BackgroundColor = manifestApp.GetStringValue("BackgroundColor");
-                Package = package;
-                EntryPoint = manifestApp.GetStringValue("EntryPoint");
-                               
-                DisplayName = ResourceFromPri(package.FullName, DisplayName);
-                Description = ResourceFromPri(package.FullName, Description);
-                LogoUri = LogoUriFromManifest(manifestApp);
-                LogoPath = LogoPathFromUri(LogoUri);
-
-                Enabled = true;
-                CanRunElevated = IfApplicationcanRunElevated();
-            }
-
-            private bool IfApplicationcanRunElevated()
-            {
-                if (EntryPoint == "Windows.FullTrustApplication")
-                {
-                    return true;
-                }
-                else
-                {
-                    var manifest = Package.Location + "\\AppxManifest.xml";
-                    if (File.Exists(manifest))
-                    {
-                        var file = File.ReadAllText(manifest);
-                        if(file.Contains("TrustLevel=\"mediumIL\"", StringComparison.InvariantCultureIgnoreCase))
-                        {
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            }
-
-            internal string ResourceFromPri(string packageFullName, string resourceReference)
-            {
-                const string prefix = "ms-resource:";
-                if (!string.IsNullOrWhiteSpace(resourceReference) && resourceReference.StartsWith(prefix))
-                {
-                    // magic comes from @talynone
-                    // https://github.com/talynone/Wox.Plugin.WindowsUniversalAppLauncher/blob/master/StoreAppLauncher/Helpers/NativeApiHelper.cs#L139-L153
-                    string key = resourceReference.Substring(prefix.Length);
-                    string parsed;
-                    if (key.StartsWith("//"))
-                    {
-                        parsed = prefix + key;
-                    }
-                    else if (key.StartsWith("/"))
-                    {
-                        parsed = prefix + "//" + key;
-                    }
-                    else
-                    {
-                        parsed = prefix + "///resources/" + key;
-                    }
-
-                    var outBuffer = new StringBuilder(128);
-                    string source = $"@{{{packageFullName}? {parsed}}}";
-                    var capacity = (uint)outBuffer.Capacity;
-                    var hResult = SHLoadIndirectString(source, outBuffer, capacity, IntPtr.Zero);
-                    if (hResult == Hresult.Ok)
-                    {
-                        var loaded = outBuffer.ToString();
-                        if (!string.IsNullOrEmpty(loaded))
-                        {
-                            return loaded;
-                        }
-                        else
-                        {
-                            ProgramLogger.LogException($"|UWP|ResourceFromPri|{Package.Location}|Can't load null or empty result "
-                                                        + $"pri {source} in uwp location {Package.Location}", new NullReferenceException());
-                            return string.Empty;
-                        }
-                    }
-                    else
-                    {
-                        // https://github.com/Wox-launcher/Wox/issues/964
-                        // known hresult 2147942522:
-                        // 'Microsoft Corporation' violates pattern constraint of '\bms-resource:.{1,256}'.
-                        // for
-                        // Microsoft.MicrosoftOfficeHub_17.7608.23501.0_x64__8wekyb3d8bbwe: ms-resource://Microsoft.MicrosoftOfficeHub/officehubintl/AppManifest_GetOffice_Description
-                        // Microsoft.BingFoodAndDrink_3.0.4.336_x64__8wekyb3d8bbwe: ms-resource:AppDescription
-                        var e = Marshal.GetExceptionForHR((int)hResult);
-                        ProgramLogger.LogException($"|UWP|ResourceFromPri|{Package.Location}|Load pri failed {source} with HResult {hResult} and location {Package.Location}", e);
-                        return string.Empty;
-                    }
-                }
-                else
-                {
-                    return resourceReference;
-                }
-            }
-
-
-            internal string LogoUriFromManifest(IAppxManifestApplication app)
-            {
-                var logoKeyFromVersion = new Dictionary<PackageVersion, string>
-                {
-                    { PackageVersion.Windows10, "Square44x44Logo" },
-                    { PackageVersion.Windows81, "Square30x30Logo" },
-                    { PackageVersion.Windows8, "SmallLogo" },
-                };
-                if (logoKeyFromVersion.ContainsKey(Package.Version))
-                {
-                    var key = logoKeyFromVersion[Package.Version];
-                    var logoUri = app.GetStringValue(key);
-                    return logoUri;
-                }
-                else
-                {
-                    return string.Empty;
-                }
-            }
-
-            internal string LogoPathFromUri(string uri)
-            {
-                // all https://msdn.microsoft.com/windows/uwp/controls-and-patterns/tiles-and-notifications-app-assets
-                // windows 10 https://msdn.microsoft.com/en-us/library/windows/apps/dn934817.aspx
-                // windows 8.1 https://msdn.microsoft.com/en-us/library/windows/apps/hh965372.aspx#target_size
-                // windows 8 https://msdn.microsoft.com/en-us/library/windows/apps/br211475.aspx
-
-                string path;
-                if (uri.Contains("\\"))
-                {
-                    path = Path.Combine(Package.Location, uri);
-                }
-                else
-                {
-                    // for C:\Windows\MiracastView etc
-                    path = Path.Combine(Package.Location, "Assets", uri);
-                }
-
-                var extension = Path.GetExtension(path);
-                if (extension != null)
-                {
-                    var end = path.Length - extension.Length;
-                    var prefix = path.Substring(0, end);
-                    var paths = new List<string> { path };
-
-                    var scaleFactors = new Dictionary<PackageVersion, List<int>>
-                    {
-                        // scale factors on win10: https://docs.microsoft.com/en-us/windows/uwp/controls-and-patterns/tiles-and-notifications-app-assets#asset-size-tables,
-                        { PackageVersion.Windows10, new List<int> { 100, 125, 150, 200, 400 } },
-                        { PackageVersion.Windows81, new List<int> { 100, 120, 140, 160, 180 } },
-                        { PackageVersion.Windows8, new List<int> { 100 } }
-                    };
-
-                    if (scaleFactors.ContainsKey(Package.Version))
-                    {
-                        foreach (var factor in scaleFactors[Package.Version])
-                        {
-                            paths.Add($"{prefix}.scale-{factor}{extension}");
-                        }
-                    }
-
-                    var selected = paths.FirstOrDefault(File.Exists);
-                    if (!string.IsNullOrEmpty(selected))
-                    {
-                        return selected;
-                    }
-                    else
-                    {
-                        ProgramLogger.LogException($"|UWP|LogoPathFromUri|{Package.Location}" +
-                                                    $"|{UserModelId} can't find logo uri for {uri} in package location: {Package.Location}", new FileNotFoundException());
-                        return string.Empty;
-                    }
-                }
-                else
-                {
-                    ProgramLogger.LogException($"|UWP|LogoPathFromUri|{Package.Location}" +
-                                                    $"|Unable to find extension from {uri} for {UserModelId} " +
-                                                    $"in package location {Package.Location}", new FileNotFoundException());
-                    return string.Empty;
-                }
-            }
-
-
-            public ImageSource Logo()
-            {
-                var logo = ImageFromPath(LogoPath);
-                return logo;
-            }
-
-
-            private BitmapImage ImageFromPath(string path)
-            {
-                if (File.Exists(path))
-                {
-                    var image = new BitmapImage(new Uri(path));
-                    return image;
-                }
-                else
-                {
-                    ProgramLogger.LogException($"|UWP|ImageFromPath|{path}" +
-                                                    $"|Unable to get logo for {UserModelId} from {path} and" +
-                                                    $" located in {Package.Location}", new FileNotFoundException());
-                    return new BitmapImage(new Uri(Constant.ErrorIcon));
-                }
-            }
-
-            public override string ToString()
-            {
-                return $"{DisplayName}: {Description}";
-            }
+            // Using CurrentCultureIgnoreCase since this is used with FamilyName
+            return FamilyName.GetHashCode(StringComparison.CurrentCultureIgnoreCase);
         }
 
         public enum PackageVersion
@@ -600,27 +224,19 @@ namespace Microsoft.Plugin.Program.Programs
             Windows10,
             Windows81,
             Windows8,
-            Unknown
+            Unknown,
         }
 
         [Flags]
-        private enum Stgm : uint
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1714:Flags enums should have plural names", Justification = "This name is consistent with the corresponding win32 flags: https://docs.microsoft.com/en-us/windows/win32/stg/stgm-constants ")]
+        public enum Stgm : long
         {
-            Read = 0x0,
-            ShareExclusive = 0x10,
+            Read = 0x00000000L,
         }
 
-        private enum Hresult : uint
+        public enum Hresult : int
         {
-            Ok = 0x0000,
+            Ok = 0x0,
         }
-
-        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
-        private static extern Hresult SHCreateStreamOnFileEx(string fileName, Stgm grfMode, uint attributes, bool create,
-            IStream reserved, out IStream stream);
-
-        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)]
-        private static extern Hresult SHLoadIndirectString(string pszSource, StringBuilder pszOutBuf, uint cchOutBuf,
-            IntPtr ppvReserved);
     }
 }

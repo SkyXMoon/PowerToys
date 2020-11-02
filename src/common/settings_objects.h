@@ -22,8 +22,8 @@ namespace PowerToysSettings
         void set_video_link(std::wstring_view video_link);
 
         // Add properties to the PowerToy settings.
-        void add_bool_toogle(std::wstring_view name, UINT description_resource_id, bool value);
-        void add_bool_toogle(std::wstring_view name, std::wstring_view description, bool value);
+        void add_bool_toggle(std::wstring_view name, UINT description_resource_id, bool value);
+        void add_bool_toggle(std::wstring_view name, std::wstring_view description, bool value);
 
         void add_int_spinner(std::wstring_view name, UINT description_resource_id, int value, int min, int max, int step);
         void add_int_spinner(std::wstring_view name, std::wstring_view description, int value, int min, int max, int step);
@@ -67,9 +67,9 @@ namespace PowerToysSettings
     class PowerToyValues
     {
     public:
-        PowerToyValues(std::wstring_view powertoy_name);
-        static PowerToyValues from_json_string(std::wstring_view json);
-        static PowerToyValues load_from_settings_file(std::wstring_view powertoy_name);
+        PowerToyValues(std::wstring_view powertoy_name, std::wstring_view powertoy_key);
+        static PowerToyValues from_json_string(std::wstring_view json, std::wstring_view powertoy_key);
+        static PowerToyValues load_from_settings_file(std::wstring_view powertoy_key);
 
         template<typename T>
         inline void add_property(std::wstring_view name, T value)
@@ -83,6 +83,7 @@ namespace PowerToysSettings
         std::optional<int> get_int_value(std::wstring_view property_name);
         std::optional<std::wstring> get_string_value(std::wstring_view property_name);
         std::optional<json::JsonObject> get_json(std::wstring_view property_name);
+        json::JsonObject get_raw_json();
 
         std::wstring serialize();
         void save_to_settings_file();
@@ -91,7 +92,7 @@ namespace PowerToysSettings
         const std::wstring m_version = L"1.0";
         void set_version();
         json::JsonObject m_json;
-        std::wstring _name;
+        std::wstring _key;
         PowerToyValues() {}
     };
 
@@ -159,7 +160,7 @@ namespace PowerToysSettings
         {
             auto layout = GetKeyboardLayout(0);
             auto scan_code = MapVirtualKeyExW(key_code, MAPVK_VK_TO_VSC_EX, layout);
-            // Determinate if vk is an extended key. Unfortunatly MAPVK_VK_TO_VSC_EX
+            // Determinate if vk is an extended key. Unfortunately MAPVK_VK_TO_VSC_EX
             // does not return correct values.
             static std::vector<UINT> extended_keys = {
                 VK_APPS,

@@ -27,7 +27,7 @@ std::vector<DWORD> LayoutMap::GetKeyCodeList(const bool isShortcut)
     return impl->GetKeyCodeList(isShortcut);
 }
 
-std::vector<std::wstring> LayoutMap::GetKeyNameList(const bool isShortcut)
+std::vector<std::pair<DWORD, std::wstring>> LayoutMap::GetKeyNameList(const bool isShortcut)
 {
     return impl->GetKeyNameList(isShortcut);
 }
@@ -130,7 +130,7 @@ void LayoutMap::LayoutMapImpl::UpdateLayout()
     keyboardLayoutMap[VK_HELP] = L"Help";
     keyboardLayoutMap[VK_LWIN] = L"Win (Left)";
     keyboardLayoutMap[VK_RWIN] = L"Win (Right)";
-    keyboardLayoutMap[VK_APPS] = L"Menu";
+    keyboardLayoutMap[VK_APPS] = L"Apps/Menu";
     keyboardLayoutMap[VK_SLEEP] = L"Sleep";
     keyboardLayoutMap[VK_NUMPAD0] = L"NumPad 0";
     keyboardLayoutMap[VK_NUMPAD1] = L"NumPad 1";
@@ -181,7 +181,7 @@ void LayoutMap::LayoutMapImpl::UpdateLayout()
     keyboardLayoutMap[VK_BROWSER_STOP] = L"Browser Stop";
     keyboardLayoutMap[VK_BROWSER_SEARCH] = L"Browser Search";
     keyboardLayoutMap[VK_BROWSER_FAVORITES] = L"Browser Favorites";
-    keyboardLayoutMap[VK_BROWSER_HOME] = L"Browser Start & Home";
+    keyboardLayoutMap[VK_BROWSER_HOME] = L"Browser Home";
     keyboardLayoutMap[VK_VOLUME_MUTE] = L"Volume Mute";
     keyboardLayoutMap[VK_VOLUME_DOWN] = L"Volume Down";
     keyboardLayoutMap[VK_VOLUME_UP] = L"Volume Up";
@@ -191,8 +191,8 @@ void LayoutMap::LayoutMapImpl::UpdateLayout()
     keyboardLayoutMap[VK_MEDIA_PLAY_PAUSE] = L"Play/Pause Media";
     keyboardLayoutMap[VK_LAUNCH_MAIL] = L"Start Mail";
     keyboardLayoutMap[VK_LAUNCH_MEDIA_SELECT] = L"Select Media";
-    keyboardLayoutMap[VK_LAUNCH_APP1] = L"Start Application 1";
-    keyboardLayoutMap[VK_LAUNCH_APP2] = L"Start Application 2";
+    keyboardLayoutMap[VK_LAUNCH_APP1] = L"Start App 1";
+    keyboardLayoutMap[VK_LAUNCH_APP2] = L"Start App 2";
     keyboardLayoutMap[VK_PACKET] = L"Packet";
     keyboardLayoutMap[VK_ATTN] = L"Attn";
     keyboardLayoutMap[VK_CRSEL] = L"CrSel";
@@ -204,7 +204,18 @@ void LayoutMap::LayoutMapImpl::UpdateLayout()
     keyboardLayoutMap[VK_OEM_CLEAR] = L"Clear";
     keyboardLayoutMap[0xFF] = L"Undefined";
     keyboardLayoutMap[CommonSharedConstants::VK_WIN_BOTH] = L"Win";
-    // To do: Add IME key names
+    keyboardLayoutMap[VK_KANA] = L"IME Kana";
+    keyboardLayoutMap[VK_HANGEUL] = L"IME Hangeul";
+    keyboardLayoutMap[VK_HANGUL] = L"IME Hangul";
+    keyboardLayoutMap[VK_JUNJA] = L"IME Junja";
+    keyboardLayoutMap[VK_FINAL] = L"IME Final";
+    keyboardLayoutMap[VK_HANJA] = L"IME Hanja";
+    keyboardLayoutMap[VK_KANJI] = L"IME Kanji";
+    keyboardLayoutMap[VK_CONVERT] = L"IME Convert";
+    keyboardLayoutMap[VK_NONCONVERT] = L"IME Non-Convert";
+    keyboardLayoutMap[VK_ACCEPT] = L"IME Kana";
+    keyboardLayoutMap[VK_MODECHANGE] = L"IME Mode Change";
+    keyboardLayoutMap[CommonSharedConstants::VK_DISABLED] = L"Disable";
 }
 
 // Function to return the list of key codes in the order for the drop down. It creates it if it doesn't exist
@@ -294,25 +305,25 @@ std::vector<DWORD> LayoutMap::LayoutMapImpl::GetKeyCodeList(const bool isShortcu
     return keyCodes;
 }
 
-std::vector<std::wstring> LayoutMap::LayoutMapImpl::GetKeyNameList(const bool isShortcut)
+std::vector<std::pair<DWORD, std::wstring>> LayoutMap::LayoutMapImpl::GetKeyNameList(const bool isShortcut)
 {
-    std::vector<std::wstring> keyNames;
+    std::vector<std::pair<DWORD, std::wstring>> keyNames;
     std::vector<DWORD> keyCodes = GetKeyCodeList(isShortcut);
     std::lock_guard<std::mutex> lock(keyboardLayoutMap_mutex);
     // If it is a key list for the shortcut control then we add a "None" key at the start
     if (isShortcut)
     {
-        keyNames.push_back(L"None");
+        keyNames.push_back({ 0, L"None" });
         for (int i = 1; i < keyCodes.size(); i++)
         {
-            keyNames.push_back(keyboardLayoutMap[keyCodes[i]]);
+            keyNames.push_back({ keyCodes[i], keyboardLayoutMap[keyCodes[i]] });
         }
     }
     else
     {
         for (int i = 0; i < keyCodes.size(); i++)
         {
-            keyNames.push_back(keyboardLayoutMap[keyCodes[i]]);
+            keyNames.push_back({ keyCodes[i], keyboardLayoutMap[keyCodes[i]] });
         }
     }
 

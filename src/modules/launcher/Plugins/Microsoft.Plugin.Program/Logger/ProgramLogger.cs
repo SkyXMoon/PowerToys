@@ -1,12 +1,13 @@
-﻿using NLog;
-using NLog.Config;
-using NLog.Targets;
+﻿// Copyright (c) Microsoft Corporation
+// The Microsoft Corporation licenses this file to you under the MIT license.
+// See the LICENSE file in the project root for more information.
+
 using System;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Security;
-using Wox.Infrastructure;
+using Wox.Plugin.Logger;
 
 namespace Microsoft.Plugin.Program.Logger
 {
@@ -17,108 +18,46 @@ namespace Microsoft.Plugin.Program.Logger
     /// </summary>
     internal static class ProgramLogger
     {
-        public const string DirectoryName = "Logs";
-
-        static ProgramLogger()
-        {
-            var path = Path.Combine(Constant.DataDirectory, DirectoryName, Constant.Version);
-            if (!Directory.Exists(path))
-            {
-                Directory.CreateDirectory(path);
-            }
-
-            var configuration = new LoggingConfiguration();
-            var target = new FileTarget();
-            configuration.AddTarget("file", target);
-            target.FileName = path.Replace(@"\", "/") + "/${shortdate}.txt";
-#if DEBUG
-            var rule = new LoggingRule("*", LogLevel.Debug, target);
-#else
-            var rule = new LoggingRule("*", LogLevel.Error, target);
-#endif
-            configuration.LoggingRules.Add(rule);
-            LogManager.Configuration = configuration;
-        }
-
         /// <summary>
         /// Logs an exception
         /// </summary>
         [MethodImpl(MethodImplOptions.Synchronized)]
-        internal static void LogException(string classname, string callingMethodName, string loadingProgramPath,
-            string interpretationMessage, Exception e)
+        internal static void Exception(string message, Exception ex, Type fullClassName, string loadingProgramPath, [CallerMemberName] string methodName = "", [CallerFilePath] string sourceFilePath = "", [CallerLineNumber] int sourceLineNumber = 0)
         {
-            Debug.WriteLine($"ERROR{classname}|{callingMethodName}|{loadingProgramPath}|{interpretationMessage}");
-
-            var logger = LogManager.GetLogger("");
-
-            var innerExceptionNumber = 1;
-
+            // internal static void LogException(string classname, string callingMethodName, string loadingProgramPath, string interpretationMessage, Exception e)
             var possibleResolution = "Not yet known";
             var errorStatus = "UNKNOWN";
 
-            logger.Error("------------- BEGIN Microsoft.Plugin.Program exception -------------");
-
-            do
+            if (IsKnownWinProgramError(ex, methodName) || IsKnownUWPProgramError(ex, methodName))
             {
-                if (IsKnownWinProgramError(e, callingMethodName) || IsKnownUWPProgramError(e, callingMethodName))
-                {
-                    possibleResolution = "Can be ignored and Wox should still continue, however the program may not be loaded";
-                    errorStatus = "KNOWN";
-                }
-
-                var calledMethod = e.TargetSite != null ? e.TargetSite.ToString() : e.StackTrace;
-
-                calledMethod = string.IsNullOrEmpty(calledMethod) ? "Not available" : calledMethod;
-
-                logger.Error($"\nException full name: {e.GetType().FullName}"
-                             + $"\nError status: {errorStatus}"
-                             + $"\nClass name: {classname}"
-                             + $"\nCalling method: {callingMethodName}"
-                             + $"\nProgram path: {loadingProgramPath}"
-                             + $"\nInnerException number: {innerExceptionNumber}"
-                             + $"\nException message: {e.Message}"
-                             + $"\nException error type: HResult {e.HResult}"
-                             + $"\nException thrown in called method: {calledMethod}"
-                             + $"\nPossible interpretation of the error: {interpretationMessage}"
-                             + $"\nPossible resolution: {possibleResolution}");
-
-                innerExceptionNumber++;
-                e = e.InnerException;
-            } while (e != null);
-
-            logger.Error("------------- END Microsoft.Plugin.Program exception -------------");
-        }
-
-        /// <summary>
-        /// Please follow exception format: |class name|calling method name|loading program path|user friendly message that explains the error
-        /// => Example: |Win32|LnkProgram|c:\..\chrome.exe|Permission denied on directory, but Wox should continue
-        /// </summary>
-        [MethodImpl(MethodImplOptions.Synchronized)]
-        internal static void LogException(string message, Exception e)
-        {
-            //Index 0 is always empty.
-            var parts = message.Split('|');
-            if (parts.Length < 4)
-            {
-                var logger = LogManager.GetLogger("");
-                logger.Error(e, $"fail to log exception in program logger, parts length is too small: {parts.Length}, message: {message}");
+                possibleResolution = "Can be ignored and Wox should still continue, however the program may not be loaded";
+                errorStatus = "KNOWN";
             }
 
-            var classname = parts[1];
-            var callingMethodName = parts[2];
-            var loadingProgramPath = parts[3];
-            var interpretationMessage = parts[4];
+            var calledMethod = ex.TargetSite != null ? ex.TargetSite.ToString() : ex.StackTrace;
 
-            LogException(classname, callingMethodName, loadingProgramPath, interpretationMessage, e);
+            calledMethod = string.IsNullOrEmpty(calledMethod) ? "Not available" : calledMethod;
+            var msg = $"\tError status: {errorStatus}"
+                         + $"\n\t\tProgram path: {loadingProgramPath}"
+                         + $"\n\t\tException thrown in called method: {calledMethod}"
+                         + $"\n\t\tPossible interpretation of the error: {message}"
+                         + $"\n\t\tPossible resolution: {possibleResolution}";
+
+            // removed looping logic since that is inside Log class
+            Log.Exception(msg, ex, fullClassName, methodName, sourceFilePath, sourceLineNumber);
         }
 
         private static bool IsKnownWinProgramError(Exception e, string callingMethodName)
         {
             if (e.TargetSite?.Name == "GetDescription" && callingMethodName == "LnkProgram")
+            {
                 return true;
+            }
 
             if (e is SecurityException || e is UnauthorizedAccessException || e is DirectoryNotFoundException)
+            {
                 return true;
+            }
 
             return false;
         }
@@ -128,10 +67,14 @@ namespace Microsoft.Plugin.Program.Logger
             if (((e.HResult == -2147024774 || e.HResult == -2147009769) && callingMethodName == "ResourceFromPri")
                 || (e.HResult == -2147024894 && (callingMethodName == "LogoPathFromUri" || callingMethodName == "ImageFromPath"))
                 || (e.HResult == -2147024864 && callingMethodName == "InitializeAppInfo"))
+            {
                 return true;
+            }
 
             if (callingMethodName == "XmlNamespaces")
+            {
                 return true;
+            }
 
             return false;
         }

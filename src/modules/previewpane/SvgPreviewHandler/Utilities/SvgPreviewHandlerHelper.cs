@@ -4,15 +4,16 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Xml.Linq;
 
-namespace SvgPreviewHandler.Utilities
+namespace Microsoft.PowerToys.PreviewHandler.Svg.Utilities
 {
     /// <summary>
     /// Helper utilities for Svg Preview Handler.
     /// </summary>
-    public class SvgPreviewHandlerHelper
+    public static class SvgPreviewHandlerHelper
     {
         /// <summary>
         /// Dictionary of elements in lower case that are blocked from Svg for preview pane.
@@ -46,7 +47,10 @@ namespace SvgPreviewHandler.Utilities
                 var elements = doc.Descendants().ToList();
                 foreach (XElement element in elements)
                 {
-                    var elementName = element?.Name?.LocalName?.ToLower();
+                    // Using Invariant since we are doing an exact match for HTML tags and we want it to behave the same in every culture
+#pragma warning disable CA1308 // Normalize strings to uppercase
+                    var elementName = element?.Name?.LocalName?.ToLowerInvariant();
+#pragma warning restore CA1308 // Normalize strings to uppercase
                     if (elementName != null && blockedElementsName.ContainsKey(elementName))
                     {
                         foundBlockedElement = true;
@@ -56,7 +60,9 @@ namespace SvgPreviewHandler.Utilities
                     }
                 }
             }
+#pragma warning disable CA1031 // Do not catch general exception types
             catch (Exception)
+#pragma warning restore CA1031 // Do not catch general exception types
             {
             }
 

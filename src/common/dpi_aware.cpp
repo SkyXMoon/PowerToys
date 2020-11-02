@@ -46,8 +46,24 @@ namespace DPIAware
         UINT dpi_x, dpi_y;
         if (GetDpiForMonitor(monitor_handle, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y) == S_OK)
         {
-            width = width * dpi_x / DEFAULT_DPI;
-            height = height * dpi_y / DEFAULT_DPI;
+            width = width * static_cast<int>(dpi_x) / DEFAULT_DPI;
+            height = height * static_cast<int>(dpi_y) / DEFAULT_DPI;
+        }
+    }
+
+    void InverseConvert(HMONITOR monitor_handle, int& width, int& height)
+    {
+        if (monitor_handle == NULL)
+        {
+            const POINT ptZero = { 0, 0 };
+            monitor_handle = MonitorFromPoint(ptZero, MONITOR_DEFAULTTOPRIMARY);
+        }
+
+        UINT dpi_x, dpi_y;
+        if (GetDpiForMonitor(monitor_handle, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y) == S_OK)
+        {
+            width = width * DEFAULT_DPI / static_cast<int>(dpi_x);
+            height = height * DEFAULT_DPI / static_cast<int>(dpi_y);
         }
     }
 
@@ -56,7 +72,7 @@ namespace DPIAware
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    AwarnessLevel GetAwarenessLevel(DPI_AWARENESS_CONTEXT system_returned_value)
+    AwarenessLevel GetAwarenessLevel(DPI_AWARENESS_CONTEXT system_returned_value)
     {
         const std::array levels{ DPI_AWARENESS_CONTEXT_UNAWARE,
                                  DPI_AWARENESS_CONTEXT_SYSTEM_AWARE,
@@ -67,9 +83,9 @@ namespace DPIAware
         {
             if (AreDpiAwarenessContextsEqual(levels[i], system_returned_value))
             {
-                return static_cast<AwarnessLevel>(i);
+                return static_cast<AwarenessLevel>(i);
             }
         }
-        return AwarnessLevel::UNAWARE;
+        return AwarenessLevel::UNAWARE;
     }
 }

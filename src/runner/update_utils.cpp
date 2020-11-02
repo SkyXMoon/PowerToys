@@ -1,5 +1,8 @@
 #include "pch.h"
 
+#include <common/common.h>
+#include "Generated Files/resource.h"
+
 #include "action_runner_utils.h"
 #include "update_state.h"
 #include "update_utils.h"
@@ -7,6 +10,10 @@
 #include <common/timeutil.h>
 #include <common/updating/updating.h>
 #include <runner/general_settings.h>
+
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+
+auto Strings = updating::notifications::strings::create();
 
 bool start_msi_uninstallation_sequence()
 {
@@ -18,7 +25,7 @@ bool start_msi_uninstallation_sequence()
         return true;
     }
 
-    if (!updating::offer_msi_uninstallation())
+    if (!updating::offer_msi_uninstallation(Strings))
     {
         // User declined to uninstall or opted for "Don't show again"
         return false;
@@ -54,7 +61,7 @@ void github_update_worker()
         const bool download_updates_automatically = get_general_settings().downloadUpdatesAutomatically;
         try
         {
-            updating::try_autoupdate(download_updates_automatically).get();
+            updating::try_autoupdate(download_updates_automatically, Strings).get();
         }
         catch (...)
         {
@@ -63,6 +70,19 @@ void github_update_worker()
         UpdateState::store([](UpdateState& state) {
             state.github_update_last_checked_date.emplace(timeutil::now());
         });
+    }
+}
+
+std::wstring check_for_updates()
+{
+    try
+    {
+        return updating::check_new_version_available(Strings).get();
+    }
+    catch (...)
+    {
+        // Couldn't autoupdate
+        return std::wstring();
     }
 }
 
@@ -75,8 +95,13 @@ bool launch_pending_update()
         {
             UpdateState::store([](UpdateState& state) {
                 state.pending_update = false;
+                state.pending_installer_filename = {};
             });
-            launch_action_runner(UPDATE_NOW_LAUNCH_STAGE1_START_PT_CMDARG);
+            std::wstring args{ UPDATE_NOW_LAUNCH_STAGE1_START_PT_CMDARG };
+            args += L' ';
+            args += update_state.pending_installer_filename;
+
+            launch_action_runner(args.c_str());
             return true;
         }
     }

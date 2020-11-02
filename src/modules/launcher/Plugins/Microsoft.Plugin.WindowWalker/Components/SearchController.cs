@@ -1,9 +1,11 @@
 ﻿// Copyright (c) Microsoft Corporation
 // The Microsoft Corporation licenses this file to you under the MIT license.
-// See the LICENSE file in the project root for more information.  Code forked from Betsegaw Tadele's https://github.com/betsegaw/windowwalker/
+// See the LICENSE file in the project root for more information.
 
+// Code forked from Betsegaw Tadele's https://github.com/betsegaw/windowwalker/
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -33,12 +35,12 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// <summary>
         /// Delegate handler for open windows updates
         /// </summary>
-        public delegate void SearchResultUpdateHandler(object sender, SearchResultUpdateEventArgs e);
+        public delegate void SearchResultUpdateEventHandler(object sender, SearchResultUpdateEventArgs e);
 
         /// <summary>
         /// Event raised when there is an update to the list of open windows
         /// </summary>
-        public event SearchResultUpdateHandler OnSearchResultUpdate;
+        public event SearchResultUpdateEventHandler OnSearchResultUpdateEventHandler;
 
         /// <summary>
         /// Gets or sets the current search text
@@ -52,7 +54,8 @@ namespace Microsoft.Plugin.WindowWalker.Components
 
             set
             {
-                searchText = value.ToLower().Trim();
+                // Using CurrentCulture since this is user facing
+                searchText = value.ToLower(CultureInfo.CurrentCulture).Trim();
             }
         }
 
@@ -87,26 +90,15 @@ namespace Microsoft.Plugin.WindowWalker.Components
         private SearchController()
         {
             searchText = string.Empty;
-            OpenWindows.Instance.OnOpenWindowsUpdate += OpenWindowsUpdateHandler;
         }
 
         /// <summary>
         /// Event handler for when the search text has been updated
         /// </summary>
         public async Task UpdateSearchText(string searchText)
-        { 
-            this.SearchText = searchText;
-            await SyncOpenWindowsWithModelAsync();
-        }
-
-        /// <summary>
-        /// Event handler called when the OpenWindows list changes
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
-        public async void OpenWindowsUpdateHandler(object sender, SearchResultUpdateEventArgs e)
         {
-            await SyncOpenWindowsWithModelAsync();
+            SearchText = searchText;
+            await SyncOpenWindowsWithModelAsync().ConfigureAwait(false);
         }
 
         /// <summary>
@@ -118,22 +110,22 @@ namespace Microsoft.Plugin.WindowWalker.Components
 
             List<Window> snapshotOfOpenWindows = OpenWindows.Instance.Windows;
 
-            if (SearchText == string.Empty)
+            if (string.IsNullOrWhiteSpace(SearchText))
             {
                 searchMatches = new List<SearchResult>();
             }
             else
             {
-                searchMatches = await FuzzySearchOpenWindowsAsync(snapshotOfOpenWindows);
+                searchMatches = await FuzzySearchOpenWindowsAsync(snapshotOfOpenWindows).ConfigureAwait(false);
             }
 
-            OnSearchResultUpdate?.Invoke(this, new SearchResultUpdateEventArgs());
+            OnSearchResultUpdateEventHandler?.Invoke(this, new SearchResultUpdateEventArgs());
         }
 
         /// <summary>
         /// Redirecting method for Fuzzy searching
         /// </summary>
-        /// <param name="openWindows"></param>
+        /// <param name="openWindows">what windows are open</param>
         /// <returns>Returns search results</returns>
         private Task<List<SearchResult>> FuzzySearchOpenWindowsAsync(List<Window> openWindows)
         {
@@ -145,7 +137,7 @@ namespace Microsoft.Plugin.WindowWalker.Components
         /// <summary>
         /// Search method that matches the title of windows with the user search text
         /// </summary>
-        /// <param name="openWindows"></param>
+        /// <param name="openWindows">what windows are open</param>
         /// <returns>Returns search results</returns>
         private List<SearchResult> FuzzySearchOpenWindows(List<Window> openWindows)
         {

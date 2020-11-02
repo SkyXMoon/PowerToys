@@ -1,5 +1,5 @@
 #pragma once
-#include "resource.h"
+#include "Generated Files/resource.h"
 
 #define WIN32_LEAN_AND_MEAN // Exclude rarely-used stuff from Windows headers
 #include <Unknwn.h>
@@ -10,6 +10,7 @@
 #include <dwmapi.h>
 #include <ProjectTelemetry.h>
 #include <shellapi.h>
+#include <ShellScalingApi.h>
 #include <strsafe.h>
 #include <TraceLoggingActivity.h>
 #include <wil\resource.h>
@@ -19,6 +20,7 @@
 #include <shared_mutex>
 #include <functional>
 #include <unordered_set>
+#include <ShObjIdl.h>
 
 #pragma comment(lib, "windowsapp")
 

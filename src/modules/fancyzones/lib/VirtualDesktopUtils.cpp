@@ -2,14 +2,17 @@
 
 #include "VirtualDesktopUtils.h"
 
-namespace VirtualDesktopUtils
+// Non-Localizable strings
+namespace NonLocalizable
 {
-    const CLSID CLSID_ImmersiveShell = { 0xC2F03A33, 0x21F5, 0x47FA, 0xB4, 0xBB, 0x15, 0x63, 0x62, 0xA2, 0xF2, 0x39 };
-    const wchar_t GUID_EmptyGUID[] = L"{00000000-0000-0000-0000-000000000000}";
-
     const wchar_t RegCurrentVirtualDesktop[] = L"CurrentVirtualDesktop";
     const wchar_t RegVirtualDesktopIds[] = L"VirtualDesktopIDs";
     const wchar_t RegKeyVirtualDesktops[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops";
+}
+
+namespace VirtualDesktopUtils
+{
+    const CLSID CLSID_ImmersiveShell = { 0xC2F03A33, 0x21F5, 0x47FA, 0xB4, 0xBB, 0x15, 0x63, 0x62, 0xA2, 0xF2, 0x39 };
 
     IServiceProvider* GetServiceProvider()
     {
@@ -44,10 +47,6 @@ namespace VirtualDesktopUtils
         // Format: <device-id>_<resolution>_<virtual-desktop-id>
         std::wstring uniqueId = zoneWindow->UniqueId();
         std::wstring virtualDesktopId = uniqueId.substr(uniqueId.rfind('_') + 1);
-        if (virtualDesktopId == GUID_EmptyGUID)
-        {
-            return false;
-        }
         return SUCCEEDED(CLSIDFromString(virtualDesktopId.c_str(), desktopId));
     }
 
@@ -69,7 +68,7 @@ namespace VirtualDesktopUtils
         if (RegOpenKeyExW(HKEY_CURRENT_USER, sessionKeyPath, 0, KEY_ALL_ACCESS, &key) == ERROR_SUCCESS)
         {
             DWORD size = sizeof(GUID);
-            if (RegQueryValueExW(key.get(), RegCurrentVirtualDesktop, 0, nullptr, reinterpret_cast<BYTE*>(&value), &size) == ERROR_SUCCESS)
+            if (RegQueryValueExW(key.get(), NonLocalizable::RegCurrentVirtualDesktop, 0, nullptr, reinterpret_cast<BYTE*>(&value), &size) == ERROR_SUCCESS)
             {
                 *desktopId = value;
                 return true;
@@ -80,20 +79,34 @@ namespace VirtualDesktopUtils
 
     bool GetCurrentVirtualDesktopId(GUID* desktopId)
     {
-        if (!GetDesktopIdFromCurrentSession(desktopId))
+        // Explorer persists current virtual desktop identifier to registry on a per session basis, but only
+        // after first virtual desktop switch happens. If the user hasn't switched virtual desktops in this
+        // session, value in registry will be empty.
+        if (GetDesktopIdFromCurrentSession(desktopId))
         {
-            // Explorer persists current virtual desktop identifier to registry on a per session basis,
-            // but only after first virtual desktop switch happens. If the user hasn't switched virtual
-            // desktops (only primary desktop) in this session value in registry will be empty.
-            // If this value is empty take first element from array of virtual desktops (not kept per session).
-            std::vector<GUID> ids{};
-            if (!GetVirtualDesktopIds(ids) || ids.empty())
-            {
-                return false;
-            }
-            *desktopId = ids[0];
+            return true;
         }
-        return true;
+        // First fallback scenario is to try obtaining virtual desktop id through IVirtualDesktopManager
+        // interface. Use foreground window (the window with which the user is currently working) to determine
+        // current virtual desktop.
+        else if (GetWindowDesktopId(GetForegroundWindow(), desktopId))
+        {
+            return true;
+        }
+        // Second fallback scenario is to get array of virtual desktops stored in registry, but not kept per
+        // session. Note that we are taking first element from virtual desktop array, which is primary desktop.
+        // If user has more than one virtual desktop, one of previous functions should return correct value,
+        // as desktop switch occured in current session.
+        else
+        {
+            std::vector<GUID> ids{};
+            if (GetVirtualDesktopIds(ids) && ids.size() > 0)
+            {
+                *desktopId = ids[0];
+                return true;
+            }
+        }
+        return false;
     }
 
     bool GetVirtualDesktopIds(HKEY hKey, std::vector<GUID>& ids)
@@ -104,13 +117,13 @@ namespace VirtualDesktopUtils
         }
         DWORD bufferCapacity;
         // request regkey binary buffer capacity only
-        if (RegQueryValueExW(hKey, RegVirtualDesktopIds, 0, nullptr, nullptr, &bufferCapacity) != ERROR_SUCCESS)
+        if (RegQueryValueExW(hKey, NonLocalizable::RegVirtualDesktopIds, 0, nullptr, nullptr, &bufferCapacity) != ERROR_SUCCESS)
         {
             return false;
         }
         std::unique_ptr<BYTE[]> buffer = std::make_unique<BYTE[]>(bufferCapacity);
         // request regkey binary content
-        if (RegQueryValueExW(hKey, RegVirtualDesktopIds, 0, nullptr, buffer.get(), &bufferCapacity) != ERROR_SUCCESS)
+        if (RegQueryValueExW(hKey, NonLocalizable::RegVirtualDesktopIds, 0, nullptr, buffer.get(), &bufferCapacity) != ERROR_SUCCESS)
         {
             return false;
         }
@@ -152,7 +165,7 @@ namespace VirtualDesktopUtils
     HKEY OpenVirtualDesktopsRegKey()
     {
         HKEY hKey{ nullptr };
-        if (RegOpenKeyEx(HKEY_CURRENT_USER, RegKeyVirtualDesktops, 0, KEY_ALL_ACCESS, &hKey) == ERROR_SUCCESS)
+        if (RegOpenKeyEx(HKEY_CURRENT_USER, NonLocalizable::RegKeyVirtualDesktops, 0, KEY_ALL_ACCESS, &hKey) == ERROR_SUCCESS)
         {
             return hKey;
         }

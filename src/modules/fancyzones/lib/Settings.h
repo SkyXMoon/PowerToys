@@ -1,7 +1,16 @@
 #pragma once
 
-#define ZONE_STAMP L"FancyZones_zone"
 #include <common/settings_objects.h>
+
+// Zoned window properties are not localized.
+namespace ZonedWindowProperties
+{
+    const wchar_t PropertyMultipleZoneID[]  = L"FancyZones_zones";
+    const wchar_t PropertyRestoreSizeID[]   = L"FancyZones_RestoreSize";
+    const wchar_t PropertyRestoreOriginID[] = L"FancyZones_RestoreOrigin";
+
+    const wchar_t MultiMonitorDeviceID[]    = L"FancyZones#MultiMonitorDevice";
+}
 
 struct Settings
 {
@@ -9,18 +18,21 @@ struct Settings
     bool shiftDrag = true;
     bool mouseSwitch = false;
     bool displayChange_moveWindows = false;
-    bool virtualDesktopChange_moveWindows = false;
     bool zoneSetChange_flashZones = false;
     bool zoneSetChange_moveWindows = false;
     bool overrideSnapHotkeys = false;
     bool moveWindowAcrossMonitors = false;
+    bool moveWindowsBasedOnPosition = false;
     bool appLastZone_moveWindows = false;
+    bool openWindowOnActiveMonitor = false;
+    bool restoreSize = false;
     bool use_cursorpos_editor_startupscreen = true;
     bool showZonesOnAllMonitors = false;
+    bool spanZonesAcrossMonitors = false;
     bool makeDraggedWindowTransparent = true;
-    std::wstring zoneColor = L"#F5FCFF";
+    std::wstring zoneColor = L"#AACDFF";
     std::wstring zoneBorderColor = L"#FFFFFF";
-    std::wstring zoneHightlightColor = L"#008CFF";
+    std::wstring zoneHighlightColor = L"#008CFF";
     int zoneHighlightOpacity = 50;
     PowerToysSettings::HotkeyObject editorHotkey = PowerToysSettings::HotkeyObject::from_settings(true, false, false, false, VK_OEM_3);
     std::wstring excludedApps = L"";
@@ -37,4 +49,4 @@ interface __declspec(uuid("{BA4E77C4-6F44-4C5D-93D3-CBDE880495C2}")) IFancyZones
     IFACEMETHOD_(const Settings*, GetSettings)() const = 0;
 };
 
-winrt::com_ptr<IFancyZonesSettings> MakeFancyZonesSettings(HINSTANCE hinstance, PCWSTR config) noexcept;
+winrt::com_ptr<IFancyZonesSettings> MakeFancyZonesSettings(HINSTANCE hinstance, PCWSTR name, PCWSTR key) noexcept;
